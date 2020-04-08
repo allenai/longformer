@@ -1,0 +1,5 @@
+torch==1.2.0
+transformers==2.0.0
+tensorboardX
+pytorch-lightning==0.6.0
+test-tube==0.7.5

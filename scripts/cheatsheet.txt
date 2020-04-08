@@ -1,0 +1,21 @@
+# --- Instructions to compile the TVM CUDA kernel ---
+# This assumes that docker and its gpu runtime are installed. Check the following for reference:
+# Docker: https://docs.docker.com/install/
+# Docker gpu runtime: https://github.com/NVIDIA/nvidia-docker#ubuntu-16041804-debian-jessiestretchbuster
+
+# clone longformer
+git clone https://github.com/allenai/longformer.git
+cd longformer
+# clone tvm inside the `longformer` directory
+git clone --single-branch --branch v0.6.0 https://github.com/apache/incubator-tvm.git
+# build docker image
+docker build -t my_tvm_image -f tvm_docker  incubator-tvm/docker/
+# run docker container
+docker run -it --gpus all  --mount type=bind,source="$(pwd)",target=/code my_tvm_image
+# inside the docker container, do the following ...
+cd code
+mv tvm tvm_runtime  # avoid collision between our small tvm runtime and the full tvm library
+rm longformer/lib/*  # remove old binaries
+python3 -m longformer.diagonaled_mm_tvm  # import diagonaled_mm_tvm to compile new ones
+ls longformer/lib/  # check the `lib` dir for the new binaries
+mv tvm_runtime tvm  # don't forget to put them back
