@@ -9,13 +9,14 @@
 
 2. Install environment and code
 
+    Our code relies on a custom CUDA kernel, so for now it only works on GPUs and Linux. We tested our code on Ubuntu, Python 3.7, CUDA10, PyTorch 1.2.0. If it doesn't work for your environment, please create a new issue.
+
     ```bash
     conda create --name longformer python=3.7
     conda activate longformer
     conda install cudatoolkit=10.0
     pip install git+https://github.com/allenai/longformer.git
     ```
-    We tested our code on Ubuntu, Python 3.7, CUDA10, PyTorch 1.2.0. If it doesn't work for your environment, please create a new issue.
 
 3. Run the model
 
@@ -34,10 +35,11 @@
     input_ids = torch.tensor(tokenizer.encode(SAMPLE_TEXT)).unsqueeze(0)  # batch of size 1
 
     model = model.cuda()  # doesn't work on CPU
-    input_ids = input_ids.cuda()
+    input_ids = input_ids.cuda()   
 
-    attention_mask = torch.ones(input_ids.shape, dtype=torch.long, device=input_ids.device)
-    attention_mask[:, [0, 1, 2, 3, 21, 513,]] =  2  # 0: no attention, 1: local attention, 2: global attention
+    # Attention mask values -- 0: no attention, 1: local attention, 2: global attention
+    attention_mask = torch.ones(input_ids.shape, dtype=torch.long, device=input_ids.device) # initialize to local attention
+    attention_mask[:, [1, 2, 3, 4, 21, 33,]] =  2  # add global attention based on your task
 
     output = model(input_ids, attention_mask=attention_mask)[0]
     ```
@@ -45,7 +47,7 @@
 
 ### Compiling the CUDA kernel
 
-Most users won't need to compile the CUDA kernel, but if you are intersted, check `scripts/cheatsheet.txt` for instructions.
+We already include the compiled binaries of the CUDA kernel, so most users won't need to compile it, but if you are intersted, check `scripts/cheatsheet.txt` for instructions.
 
 
 
