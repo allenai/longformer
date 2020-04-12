@@ -1,4 +1,4 @@
-# --- Instructions to compile the TVM CUDA kernel ---
+### ----- Instructions to compile the TVM CUDA kernel -----
 # This assumes that docker and its gpu runtime are installed. Check the following for reference:
 # Docker: https://docs.docker.com/install/
 # Docker gpu runtime: https://github.com/NVIDIA/nvidia-docker#ubuntu-16041804-debian-jessiestretchbuster
@@ -21,7 +21,7 @@ ls longformer/lib/  # check the `lib` dir for the new binaries
 mv tvm_runtime tvm  # don't forget to put them back
 
 
-# --- Instructions to train TriviaQA ---
+### ----- Instructions to train TriviaQA -----
 # Convert to a squad-like format. This is slighlty modified from the official scripts
 # here https://github.com/mandarjoshi90/triviaqa/blob/master/utils/convert_to_squad_format.py
 # to keep all answers in the document, not just the first answer. It also added the list of
@@ -33,9 +33,12 @@ python -m scripts.triviaqa_utils.convert_to_squad_format  \
   --max_num_tokens 4096  \   # only keep the first 4096 tokens
   --squad_file path/to/output/squad-wikipedia-dev-4096.json
 
-# Run TriviaQA training with the following hyperparameters. The evaluation f1
-# reported during training are computed using the official evaluation function
-# in scripts/evaluation_utils.py
+# TriviaQA training is implemented in pytorch-lightning. To train, run the following
+command.
+# Training base model takes 1 day on 4 gpus
+# Training large model takes less than 2 day on 4 gpus
+# The evaluation f1 reported during training are computed using the official
+# evaluation function in scripts/evaluation_utils.py
 python -m scripts.triviaqa  \
     --train_dataset squad-wikipedia-train-4096.json  \
     --dev_dataset squad-wikipedia-dev-4096.json  \
@@ -45,4 +48,22 @@ python -m scripts.triviaqa  \
     --model_path path/to/pretrained/longformer-base-4096  \  # or longformer-large-4096
     --seed 4321
 
-# To get predictions, run the same command above and add `--test`. Predictions are saved to `predictions.json`
+# To run our pretrained TriviaQA large model (replicate the leaderboard results),
+# first download the pytorch-lightning checkpoint:
+# https://ai2-s2-research.s3-us-west-2.amazonaws.com/longformer/triviaqa-longformer-large.tar.gz
+# then run:
+python -m scripts.triviaqa  \
+    --train_dataset squad-wikipedia-train-4096.json  \  # loaded but not used
+    --dev_dataset squad-wikipedia-dev-4096.json  \
+    --gpus 0  --num_workers 4 \
+    --max_seq_len 4096 --doc_stride -1  \
+    --save_prefix triviaqa-longformer-large  \  # pretrained pytorch-lighting checkpoint
+    --model_path path/to/pretrained/longformer-large-4096  \  # loaded but not used
+    --test   # predictions will be saved into `predictions.json`
+
+# then run the official evaluation scripts
+python -m scripts.triviaqa_utils.evaluation_utils  \
+    --dataset_file path/to/qa/wikipedia-dev.json   \
+    --prediction_file predictions.json
+# Output should be:
+{'exact_match': 73.07644188665083, 'f1': 77.78523804802242, 'common': 7993, 'denominator': 7993, 'pred_len': 7993, 'gold_len': 7993}
