@@ -22,6 +22,10 @@ mv tvm_runtime tvm  # don't forget to put them back
 
 
 ### ----- Instructions to train TriviaQA -----
+# Relevant files:
+# - scripts/triviaqa.py - our training code implemented in pytorch-lightning
+# - scripts/triviaqa_utils - copied from https://github.com/mandarjoshi90/triviaqa with slight modifications
+
 # Convert to a squad-like format. This is slighlty modified from the official scripts
 # here https://github.com/mandarjoshi90/triviaqa/blob/master/utils/convert_to_squad_format.py
 # to keep all answers in the document, not just the first answer. It also added the list of
@@ -33,10 +37,9 @@ python -m scripts.triviaqa_utils.convert_to_squad_format  \
   --max_num_tokens 4096  \   # only keep the first 4096 tokens
   --squad_file path/to/output/squad-wikipedia-dev-4096.json
 
-# TriviaQA training is implemented in pytorch-lightning. To train, run the following
-command.
+# Run training with the following hyperparameters.
 # Training base model takes 1 day on 4 gpus
-# Training large model takes less than 2 day on 4 gpus
+# Training large model takes less than 1 day on 8 gpus
 # The evaluation f1 reported during training are computed using the official
 # evaluation function in scripts/evaluation_utils.py
 python -m scripts.triviaqa  \
@@ -48,7 +51,7 @@ python -m scripts.triviaqa  \
     --model_path path/to/pretrained/longformer-base-4096  \  # or longformer-large-4096
     --seed 4321
 
-# To run our pretrained TriviaQA large model (replicate the leaderboard results),
+# To run our pretrained TriviaQA large model (replicates the leaderboard results),
 # first download the pytorch-lightning checkpoint:
 # https://ai2-s2-research.s3-us-west-2.amazonaws.com/longformer/triviaqa-longformer-large.tar.gz
 # then run:
