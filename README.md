@@ -39,7 +39,9 @@
 
     # Attention mask values -- 0: no attention, 1: local attention, 2: global attention
     attention_mask = torch.ones(input_ids.shape, dtype=torch.long, device=input_ids.device) # initialize to local attention
-    attention_mask[:, [1, 2, 3, 4, 21, 33,]] =  2  # add global attention based on your task
+    attention_mask[:, [1, 4, 21,]] =  2  # Set global attention based on the task. For example,
+                                         # classification: the <s> token
+                                         # QA: question tokenss
 
     output = model(input_ids, attention_mask=attention_mask)[0]
     ```
