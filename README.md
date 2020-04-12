@@ -47,16 +47,21 @@
     ```
 
 
-### Compiling the CUDA kernel
-
-We already include the compiled binaries of the CUDA kernel, so most users won't need to compile it, but if you are intersted, check `scripts/cheatsheet.txt` for instructions.
-
-
 ### TriviaQA
 
 * Training scripts: `scripts/triviaqa.py`
 * Pretrained large model: [`here`](https://ai2-s2-research.s3-us-west-2.amazonaws.com/longformer/triviaqa-longformer-large.tar.gz) (replicates leaderboard results)
 * Instructions: `scripts/cheatsheet.txt`
+
+
+### Compiling the CUDA kernel
+
+We already include the compiled binaries of the CUDA kernel, so most users won't need to compile it, but if you are intersted, check `scripts/cheatsheet.txt` for instructions.
+
+
+### Known issues
+
+Please check the repo [issues](https://github.com/allenai/longformer/issues) for a list of known issues that we are planning to address soon. If your issue is not discussed, please create a new one. 
 
 
 ### Citing
