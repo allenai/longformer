@@ -10,20 +10,26 @@ from transformers.modeling_roberta import RobertaConfig, RobertaModel, RobertaFo
 class Longformer(RobertaModel):
     def __init__(self, config):
         super(Longformer, self).__init__(config)
-        for i, layer in enumerate(self.encoder.layer):
-            layer.attention.self = LongformerSelfAttention(config, layer_id=i)
+        if config.attention_mode == 'n2':
+            pass  # do nothing, use BertSelfAttention instead
+        else:
+            for i, layer in enumerate(self.encoder.layer):
+                layer.attention.self = LongformerSelfAttention(config, layer_id=i)
 
 
 class LongformerForMaskedLM(RobertaForMaskedLM):
     def __init__(self, config):
         super(LongformerForMaskedLM, self).__init__(config)
-        for i, layer in enumerate(self.roberta.encoder.layer):
-            layer.attention.self = LongformerSelfAttention(config, layer_id=i)
+        if config.attention_mode == 'n2':
+            pass  # do nothing, use BertSelfAttention instead
+        else:
+            for i, layer in enumerate(self.roberta.encoder.layer):
+                layer.attention.self = LongformerSelfAttention(config, layer_id=i)
 
 
 class LongformerConfig(RobertaConfig):
-    def __init__(self, attention_window: List[int], attention_dilation: List[int],
-                 autoregressive: bool, **kwargs):
+    def __init__(self, attention_window: List[int] = None, attention_dilation: List[int] = None,
+                 autoregressive: bool = False, attention_mode: str = False, **kwargs):
         """
         Args:
             attention_window: list of attention window sizes of length = number of layers.
@@ -32,12 +38,14 @@ class LongformerConfig(RobertaConfig):
                 which is 256 on each side.
             attention_dilation: list of attention dilation of length = number of layers.
                 attention dilation of `1` means no dilation.
-            autoregressive: do autoregressive attention or full have attention of both sides
+            autoregressive: do autoregressive attention or have attention of both sides
+            attention_mode: if equals 'n2', use regular n^2 self-attention else use Longformer attention
         """
         super().__init__(**kwargs)
         self.attention_window = attention_window
         self.attention_dilation = attention_dilation
         self.autoregressive = autoregressive
+        self.attention_mode = attention_mode
 
 
 class LongformerSelfAttention(nn.Module):
@@ -63,26 +71,19 @@ class LongformerSelfAttention(nn.Module):
         self.dropout = config.attention_probs_dropout_prob
 
         self.layer_id = layer_id
-        self.attention_mode = config.attention_mode
-        assert self.attention_mode in ['n2', 'tvm']
-        if self.attention_mode == 'n2':
-            self.attention_window = 0
-            self.attention_dilation = 0
-        else:
-            self.attention_window = config.attention_window[self.layer_id]
-            self.attention_dilation = config.attention_dilation[self.layer_id]
-            assert self.attention_window > 0
-            assert self.attention_dilation > 0
+        self.attention_window = config.attention_window[self.layer_id]
+        self.attention_dilation = config.attention_dilation[self.layer_id]
+        assert self.attention_window > 0
+        assert self.attention_dilation > 0
         self.autoregressive = config.autoregressive
 
     def forward(self, hidden_states, attention_mask=None, head_mask=None):
-        if self.attention_mode == 'n2':
-            raise NotImplementedError  # this is the regular full n^2 attention
-
-        # attention_mask:
-        #   0: regular attend
-        #   +ve: global attend
-        #   -ve: no attend
+        '''
+        The `attention_mask` is changed in BertModel.forward from 0, 1, 2 to
+            -ve: no attention
+              0: local attention
+            +ve: global attention
+        '''
         if attention_mask is not None:
             attention_mask = attention_mask.squeeze(dim=2).squeeze(dim=1)
             key_padding_mask = attention_mask < 0
@@ -92,7 +93,6 @@ class LongformerSelfAttention(nn.Module):
             num_extra_indices_per_batch = extra_attention_mask.long().sum(dim=1)
             max_num_extra_indices_per_batch = num_extra_indices_per_batch.max()
             has_same_length_extra_indices = (num_extra_indices_per_batch == max_num_extra_indices_per_batch).all()
-
         hidden_states = hidden_states.transpose(0, 1)
         seq_len, bsz, embed_dim = hidden_states.size()
         assert embed_dim == self.embed_dim
