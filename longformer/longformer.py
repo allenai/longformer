@@ -203,8 +203,8 @@ class LongformerSelfAttention(nn.Module):
                 q /= math.sqrt(self.head_dim)
 
                 q = q.contiguous().view(max_num_extra_indices_per_batch, bsz * self.num_heads, self.head_dim).transpose(0, 1)  # (bsz*self.num_heads, max_num_extra_indices_per_batch, head_dim)
-                k = k.contiguous().view(-1, bsz * self.num_heads, self.head_dim).transpose(0, 1) # bsz * self.num_heads, seq_len, head_dim)
-                v = v.contiguous().view(-1, bsz * self.num_heads, self.head_dim).transpose(0, 1) # bsz * self.num_heads, seq_len, head_dim)
+                k = k.contiguous().view(-1, bsz * self.num_heads, self.head_dim).transpose(0, 1)  # bsz * self.num_heads, seq_len, head_dim)
+                v = v.contiguous().view(-1, bsz * self.num_heads, self.head_dim).transpose(0, 1)  # bsz * self.num_heads, seq_len, head_dim)
                 attn_weights = torch.bmm(q, k.transpose(1, 2))
                 assert list(attn_weights.size()) == [bsz * self.num_heads, max_num_extra_indices_per_batch, seq_len]
                 if key_padding_mask is not None:
@@ -222,10 +222,23 @@ class LongformerSelfAttention(nn.Module):
 
                 # now update attn by filling in the relevant indices with selected_attn
                 # masked_fill_ only allows floats as values so this doesn't work
-                #attn.masked_fill_(extra_attention_mask.transpose(0, 1).unsqueeze(-1), selected_attn)
+                # attn.masked_fill_(extra_attention_mask.transpose(0, 1).unsqueeze(-1), selected_attn)
                 attn[extra_attention_mask.transpose(0, 1).unsqueeze(-1).repeat((1, 1, embed_dim))] = selected_attn
             else:
-                raise ValueError # not implemented
+                raise ValueError  # not implemented
 
-        attn_weights = None
-        return attn.transpose(0, 1), attn_weights
+        context_layer = attn.transpose(0, 1)
+        if self.output_attentions:
+            if extra_attention_mask is not None and max_num_extra_indices_per_batch > 0:
+                # With global attention, return global attention probabilities only
+                # batch_size x num_heads x num_global_attention_tokens x sequence_length
+                # which is the attention weights from tokens with global attention to all tokens
+                # It doesn't not return local attention
+                attn_weights = attn_weights.view(bsz, self.num_heads, max_num_extra_indices_per_batch, seq_len)
+            else:
+                # without global attention, return local attention probabilities
+                # batch_size x num_heads x sequence_length x window_size
+                # which is the attention weights of every token attending to its neighbours
+                attn_weights = attn_weights.permute(0, 2, 1, 3)
+        outputs = (context_layer, attn_weights) if self.output_attentions else (context_layer,)
+        return outputs
