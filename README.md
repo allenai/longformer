@@ -9,7 +9,7 @@
 
 2. Install environment and code
 
-    Our code relies on a custom CUDA kernel, so for now it only works on GPUs and Linux. We tested our code on Ubuntu, Python 3.7, CUDA10, PyTorch 1.2.0. If it doesn't work for your environment, please create a new issue.
+    Our code relies on a custom CUDA kernel, and so for it only works on GPUs and Linux. We tested our code on Ubuntu, Python 3.7, CUDA10, PyTorch 1.2.0. If it doesn't work for your environment, please create a new issue.
 
     ```bash
     conda create --name longformer python=3.7
@@ -49,6 +49,12 @@
 
 We already include the compiled binaries of the CUDA kernel, so most users won't need to compile it, but if you are intersted, check `scripts/cheatsheet.txt` for instructions.
 
+
+### TriviaQA
+
+* Training scripts: `scripts/triviaqa.py`
+* Pretrained large model: [`here`](https://ai2-s2-research.s3-us-west-2.amazonaws.com/longformer/triviaqa-longformer-large.tar.gz) (replicates leaderboard results)
+* Instructions: `scripts/cheatsheet.txt`
 
 
 ### Citing
