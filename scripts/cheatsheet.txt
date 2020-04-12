@@ -19,3 +19,30 @@ rm longformer/lib/*  # remove old binaries
 python3 -m longformer.diagonaled_mm_tvm  # import diagonaled_mm_tvm to compile new ones
 ls longformer/lib/  # check the `lib` dir for the new binaries
 mv tvm_runtime tvm  # don't forget to put them back
+
+
+# --- Instructions to train TriviaQA ---
+# Convert to a squad-like format. This is slighlty modified from the official scripts
+# here https://github.com/mandarjoshi90/triviaqa/blob/master/utils/convert_to_squad_format.py
+# to keep all answers in the document, not just the first answer. It also added the list of
+# textual answers to make evaluation easy.
+python -m scripts.triviaqa_utils.convert_to_squad_format  \
+  --triviaqa_file path/to/qa/wikipedia-dev.json  \
+  --wikipedia_dir path/to/evidence/wikipedia/   \
+  --web_dir path/to/evidence/web/  \
+  --max_num_tokens 4096  \   # only keep the first 4096 tokens
+  --squad_file path/to/output/squad-wikipedia-dev-4096.json
+
+# Run TriviaQA training with the following hyperparameters. The evaluation f1
+# reported during training are computed using the official evaluation function
+# in scripts/evaluation_utils.py
+python -m scripts.triviaqa  \
+    --train_dataset squad-wikipedia-train-4096.json  \
+    --dev_dataset squad-wikipedia-dev-4096.json  \
+    --gpus 0,1,2,3,4,5,6,7  --batch_size 8  --num_workers 4 \
+    --lr 0.00003 --warmup 1000 --epochs 4  --max_seq_len 4096 --doc_stride -1  \
+    --save_prefix output_dir  \
+    --model_path path/to/pretrained/longformer-base-4096  \  # or longformer-large-4096
+    --seed 4321
+
+# To get predictions, run the same command above and add `--test`. Predictions are saved to `predictions.json`
