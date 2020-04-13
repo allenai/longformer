@@ -68,9 +68,10 @@ Please check the repo [issues](https://github.com/allenai/longformer/issues) for
 
 If you use `Longformer` in your research, please cite [Longformer: The Long-Document Transformer](https://arxiv.org/).
 ```
-@inproceedings{Beltagy2020Longformer,
+@article{Beltagy2020Longformer,
   title={Longformer: The Long-Document Transformer},
   author={Iz Beltagy and Matthew E. Peters and Arman Cohan},
+  journal={arXiv preprint arXiv:2004.05150},
   year={2020},
 }
 ```
