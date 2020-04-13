@@ -9,7 +9,7 @@
 
 2. Install environment and code
 
-    Our code relies on a custom CUDA kernel, and so for it only works on GPUs and Linux. We tested our code on Ubuntu, Python 3.7, CUDA10, PyTorch 1.2.0. If it doesn't work for your environment, please create a new issue.
+    Our code relies on a custom CUDA kernel, and for now it only works on GPUs and Linux. We tested our code on Ubuntu, Python 3.7, CUDA10, PyTorch 1.2.0. If it doesn't work for your environment, please create a new issue.
 
     ```bash
     conda create --name longformer python=3.7
