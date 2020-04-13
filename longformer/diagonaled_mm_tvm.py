@@ -158,7 +158,7 @@ class DiagonaledMM(torch.autograd.Function):
                        autoregressive: bool = False):
         '''Calls the compiled function after checking the input format. This function is called in three different modes.
         t1 x t2 = r ==> t1 and t2 are not diagonaled, but r is. Useful for query x key = attention_scores
-        t1 x t2 = r ==> t1 is diagonaled, but t2 and 2 are not. Useful to compuate attantion_scores x value = context
+        t1 x t2 = r ==> t1 is diagonaled, but t2 and r are not. Useful to compuate attantion_scores x value = context
         t1 x t2 = r ==> t1 is diagonaled and it should be transposed, but t2 and r are not diagonaled. Useful in some of
                             the calculations in the backward pass.
         '''
