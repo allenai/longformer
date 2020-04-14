@@ -77,7 +77,7 @@ class LongformerSelfAttention(nn.Module):
         assert self.attention_dilation > 0
         self.autoregressive = config.autoregressive
 
-    def forward(self, hidden_states, attention_mask=None, head_mask=None, *args, **kwargs):
+    def forward(self, hidden_states, attention_mask=None, head_mask=None, encoder_hidden_states=None, encoder_attention_mask=None):
         '''
         The `attention_mask` is changed in BertModel.forward from 0, 1, 2 to
             -ve: no attention
