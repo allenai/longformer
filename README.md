@@ -66,7 +66,7 @@ Please check the repo [issues](https://github.com/allenai/longformer/issues) for
 
 ### Citing
 
-If you use `Longformer` in your research, please cite [Longformer: The Long-Document Transformer](https://arxiv.org/).
+If you use `Longformer` in your research, please cite [Longformer: The Long-Document Transformer](https://arxiv.org/abs/2004.05150).
 ```
 @article{Beltagy2020Longformer,
   title={Longformer: The Long-Document Transformer},
