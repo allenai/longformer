@@ -92,7 +92,22 @@ class LongformerSelfAttention(nn.Module):
 
             num_extra_indices_per_batch = extra_attention_mask.long().sum(dim=1)
             max_num_extra_indices_per_batch = num_extra_indices_per_batch.max()
-            has_same_length_extra_indices = (num_extra_indices_per_batch == max_num_extra_indices_per_batch).all()
+            if max_num_extra_indices_per_batch <= 0:
+                extra_attention_mask is None
+            # To support the case of variable number of global attention in the rows of a batch,
+            # we use the following three selection masks to select global attention embeddings
+            # in a 3d tensor and pad it to `max_num_extra_indices_per_batch`
+            # 1) selecting embeddings that correspond to global attention
+            extra_attention_mask_nonzeros = extra_attention_mask.nonzero(as_tuple=True)
+            zero_to_max_range = torch.arange(0, max_num_extra_indices_per_batch,
+                                             device=num_extra_indices_per_batch.device)
+            # mask indicating which values are actually going to be padding
+            selection_padding_mask = zero_to_max_range < num_extra_indices_per_batch.unsqueeze(dim=-1)
+            # 2) location of the non-padding values in the selected global attention
+            selection_padding_mask_nonzeros = selection_padding_mask.nonzero(as_tuple=True)
+            # 3) location of the padding values in the selected global attention
+            selection_padding_mask_zeros = (selection_padding_mask == 0).nonzero(as_tuple=True)
+
         hidden_states = hidden_states.transpose(0, 1)
         seq_len, bsz, embed_dim = hidden_states.size()
         assert embed_dim == self.embed_dim
@@ -122,32 +137,11 @@ class LongformerSelfAttention(nn.Module):
 
         # the extra attention
         if extra_attention_mask is not None:
-            if has_same_length_extra_indices:
-                # a simplier implementation for efficiency
-                # k = (bsz, seq_len, num_heads, head_dim)
-                selected_k = k.masked_select(extra_attention_mask.unsqueeze(-1).unsqueeze(-1)).view(bsz, max_num_extra_indices_per_batch, self.num_heads, self.head_dim)
-                # selected_k = (bsz, extra_attention_count, num_heads, head_dim)
-                # selected_attn_weights = (bsz, seq_len, num_heads, extra_attention_count)
-                selected_attn_weights = torch.einsum('blhd,bshd->blhs', (q, selected_k))
-            else:
-                # since the number of extra attention indices varies across
-                # the batch, we need to process each element of the batch
-                # individually
-                flat_selected_k = k.masked_select(extra_attention_mask.unsqueeze(-1).unsqueeze(-1))
-                selected_attn_weights = torch.ones(
-                    bsz, seq_len, self.num_heads, max_num_extra_indices_per_batch, device=k.device, dtype=k.dtype
-                )
-                selected_attn_weights.fill_(-10000.0)
-                start = 0
-                for i in range(bsz):
-                    end = start + num_extra_indices_per_batch[i] * self.num_heads * self.head_dim
-                    # the selected entries for this batch element
-                    i_selected_k = flat_selected_k[start:end].view(-1, self.num_heads, self.head_dim)
-                    # (seq_len, num_heads, num extra indices)
-                    i_selected_attn_weights = torch.einsum('lhd,shd->lhs', (q[i, :, :, :], i_selected_k))
-                    selected_attn_weights[i, :, :, :num_extra_indices_per_batch[i]] = i_selected_attn_weights
-                    start = end
-
+            selected_k = k.new_zeros(bsz, max_num_extra_indices_per_batch, self.num_heads, self.head_dim)
+            selected_k[selection_padding_mask_nonzeros] = k[extra_attention_mask_nonzeros]
+            # (bsz, seq_len, num_heads, max_num_extra_indices_per_batch)
+            selected_attn_weights = torch.einsum('blhd,bshd->blhs', (q, selected_k))
+            selected_attn_weights[selection_padding_mask_zeros[0], :, :, selection_padding_mask_zeros[1]] = -10000
             # concat to attn_weights
             # (bsz, seq_len, num_heads, extra attention count + 2*window+1)
             attn_weights = torch.cat((selected_attn_weights, attn_weights), dim=-1)
@@ -161,25 +155,10 @@ class LongformerSelfAttention(nn.Module):
         attn_probs = F.dropout(attn_weights_float.type_as(attn_weights), p=self.dropout, training=self.training)
         v = v.view(seq_len, bsz, self.num_heads, self.head_dim).transpose(0, 1).contiguous().float()
         attn = 0
-        if extra_attention_mask is not None and max_num_extra_indices_per_batch > 0:
+        if extra_attention_mask is not None:
             selected_attn_probs = attn_probs.narrow(-1, 0, max_num_extra_indices_per_batch)
-            if has_same_length_extra_indices:
-                selected_v = v.masked_select(
-                        extra_attention_mask.unsqueeze(-1).unsqueeze(-1)
-                ).view(bsz, max_num_extra_indices_per_batch, self.num_heads, self.head_dim)
-            else:
-                flat_selected_v = v.masked_select(extra_attention_mask.unsqueeze(-1).unsqueeze(-1))
-                # don't worry about masking since this is multiplied by attn_probs, and masking above
-                # before softmax will remove masked entries
-                selected_v = torch.zeros(
-                    bsz, max_num_extra_indices_per_batch, self.num_heads, self.head_dim, device=v.device, dtype=v.dtype
-                )
-                start = 0
-                for i in range(bsz):
-                    end = start + num_extra_indices_per_batch[i] * self.num_heads * self.head_dim
-                    i_selected_v = flat_selected_v[start:end].view(-1, self.num_heads, self.head_dim)
-                    selected_v[i, :num_extra_indices_per_batch[i], :, :] = i_selected_v
-                    start = end
+            selected_v = v.new_zeros(bsz, max_num_extra_indices_per_batch, self.num_heads, self.head_dim)
+            selected_v[selection_padding_mask_nonzeros] = v[extra_attention_mask_nonzeros]
             attn = torch.einsum('blhs,bshd->blhd', (selected_attn_probs, selected_v))
             attn_probs = attn_probs.narrow(-1, max_num_extra_indices_per_batch, attn_probs.size(-1) - max_num_extra_indices_per_batch).contiguous()
 
@@ -190,50 +169,47 @@ class LongformerSelfAttention(nn.Module):
 
         # For this case, we'll just recompute the attention for these indices
         # and overwrite the attn tensor. TODO: remove the redundant computation
-        if extra_attention_mask is not None and max_num_extra_indices_per_batch > 0:
-            if has_same_length_extra_indices:
-                # query = (seq_len, bsz, dim)
-                # extra_attention_mask = (bsz, seq_len)
-                # selected_query = (max_num_extra_indices_per_batch, bsz, embed_dim)
-                selected_hidden_states = hidden_states.masked_select(extra_attention_mask.transpose(0, 1).unsqueeze(-1)).view(max_num_extra_indices_per_batch, bsz, embed_dim)
-                # if *_proj_full exists use them, otherwise default to *_proj
-                q = self.query_global(selected_hidden_states)
-                k = self.key_global(hidden_states)
-                v = self.value_global(hidden_states)
-                q /= math.sqrt(self.head_dim)
+        if extra_attention_mask is not None:
+            selected_hidden_states = hidden_states.new_zeros(max_num_extra_indices_per_batch, bsz, embed_dim)
+            selected_hidden_states[selection_padding_mask_nonzeros[::-1]] = hidden_states[extra_attention_mask_nonzeros[::-1]]
 
-                q = q.contiguous().view(max_num_extra_indices_per_batch, bsz * self.num_heads, self.head_dim).transpose(0, 1)  # (bsz*self.num_heads, max_num_extra_indices_per_batch, head_dim)
-                k = k.contiguous().view(-1, bsz * self.num_heads, self.head_dim).transpose(0, 1)  # bsz * self.num_heads, seq_len, head_dim)
-                v = v.contiguous().view(-1, bsz * self.num_heads, self.head_dim).transpose(0, 1)  # bsz * self.num_heads, seq_len, head_dim)
-                attn_weights = torch.bmm(q, k.transpose(1, 2))
-                assert list(attn_weights.size()) == [bsz * self.num_heads, max_num_extra_indices_per_batch, seq_len]
-                if key_padding_mask is not None:
-                    attn_weights = attn_weights.view(bsz, self.num_heads, max_num_extra_indices_per_batch, seq_len)
-                    attn_weights = attn_weights.masked_fill(
-                        key_padding_mask.unsqueeze(1).unsqueeze(2),
-                        float('-inf'),
-                    )
-                    attn_weights = attn_weights.view(bsz * self.num_heads, max_num_extra_indices_per_batch, seq_len)
-                attn_weights_float = F.softmax(attn_weights, dim=-1)
-                attn_probs = F.dropout(attn_weights_float.type_as(attn_weights), p=self.dropout, training=self.training)
-                selected_attn = torch.bmm(attn_probs, v)
-                assert list(selected_attn.size()) == [bsz * self.num_heads, max_num_extra_indices_per_batch, self.head_dim]
-                selected_attn = selected_attn.transpose(0, 1).contiguous().view(max_num_extra_indices_per_batch * bsz * embed_dim)
+            q = self.query_global(selected_hidden_states)
+            k = self.key_global(hidden_states)
+            v = self.value_global(hidden_states)
+            q /= math.sqrt(self.head_dim)
 
-                # now update attn by filling in the relevant indices with selected_attn
-                # masked_fill_ only allows floats as values so this doesn't work
-                # attn.masked_fill_(extra_attention_mask.transpose(0, 1).unsqueeze(-1), selected_attn)
-                attn[extra_attention_mask.transpose(0, 1).unsqueeze(-1).repeat((1, 1, embed_dim))] = selected_attn
-            else:
-                raise ValueError  # not implemented
+            q = q.contiguous().view(max_num_extra_indices_per_batch, bsz * self.num_heads, self.head_dim).transpose(0, 1)  # (bsz*self.num_heads, max_num_extra_indices_per_batch, head_dim)
+            k = k.contiguous().view(-1, bsz * self.num_heads, self.head_dim).transpose(0, 1)  # bsz * self.num_heads, seq_len, head_dim)
+            v = v.contiguous().view(-1, bsz * self.num_heads, self.head_dim).transpose(0, 1)  # bsz * self.num_heads, seq_len, head_dim)
+            attn_weights = torch.bmm(q, k.transpose(1, 2))
+            assert list(attn_weights.size()) == [bsz * self.num_heads, max_num_extra_indices_per_batch, seq_len]
+
+            attn_weights = attn_weights.view(bsz, self.num_heads, max_num_extra_indices_per_batch, seq_len)
+            attn_weights[selection_padding_mask_zeros[0], :, selection_padding_mask_zeros[1], :] = -10000.0
+            if key_padding_mask is not None:
+                attn_weights = attn_weights.masked_fill(
+                    key_padding_mask.unsqueeze(1).unsqueeze(2),
+                    -10000.0,
+                )
+            attn_weights = attn_weights.view(bsz * self.num_heads, max_num_extra_indices_per_batch, seq_len)
+            attn_weights_float = F.softmax(attn_weights, dim=-1)
+            attn_probs = F.dropout(attn_weights_float.type_as(attn_weights), p=self.dropout, training=self.training)
+            selected_attn = torch.bmm(attn_probs, v)
+            assert list(selected_attn.size()) == [bsz * self.num_heads, max_num_extra_indices_per_batch, self.head_dim]
+
+            selected_attn_4d = selected_attn.view(bsz, self.num_heads, max_num_extra_indices_per_batch, self.head_dim)
+            nonzero_selected_attn = selected_attn_4d[selection_padding_mask_nonzeros[0], :, selection_padding_mask_nonzeros[1]]
+            attn[extra_attention_mask_nonzeros[::-1]] = nonzero_selected_attn.view(len(selection_padding_mask_nonzeros[0]), -1)
 
         context_layer = attn.transpose(0, 1)
         if self.output_attentions:
             if extra_attention_mask is not None and max_num_extra_indices_per_batch > 0:
                 # With global attention, return global attention probabilities only
-                # batch_size x num_heads x num_global_attention_tokens x sequence_length
+                # batch_size x num_heads x max_num_global_attention_tokens x sequence_length
                 # which is the attention weights from tokens with global attention to all tokens
                 # It doesn't not return local attention
+                # In case of variable number of global attantion in the rows of a batch,
+                # attn_weights are padded with -10000.0 attention scores
                 attn_weights = attn_weights.view(bsz, self.num_heads, max_num_extra_indices_per_batch, seq_len)
             else:
                 # without global attention, return local attention probabilities
