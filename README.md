@@ -7,14 +7,13 @@ We added a PyTorch implementation of the sliding window attention that doesn't r
 
 Limitations: 
 - Uses 2x more memory than our custom CUDA kernel
-- Only works for the no-dilation case
-- Doesn't support the autoregressive case
+- Only works for the no-dilation case, and doesn't support the autoregressive case
 - As a result, it is not suitable for language modeling
 
 However: 
 - No custom CUDA kernel means it works on all devices including CPU and TPU (which the CUDA kernel doesn't support)
 - Supports FP16, which offsets the 2x memory increase
-- Our pretrained model doesn't use dilation making this implementation a good choice for finetuning on downstream tasks
+- Our pretrained model doesn't use dilation, making this implementation a good choice for finetuning on downstream tasks
 
 The code snippit below and the TriviaQA scripts are updated to use this new implementation.
 
@@ -41,10 +40,18 @@ The code snippit below and the TriviaQA scripts are updated to use this new impl
 
     ```python
     import torch
-    from longformer.longformer import Longformer
+    from longformer.longformer import Longformer, LongformerConfig
+    from longformer.sliding_chunks import pad_to_window_size
     from transformers import RobertaTokenizer
-    # TODO: update to use slidingchunks
-    model = Longformer.from_pretrained('longformer-base-4096/')
+
+    config = LongformerConfig.from_pretrained('longformer-base-4096/') 
+    # choose the attention mode 'n2', 'tvm' or 'sliding_chunks'
+    # 'n2': for regular n2 attantion
+    # 'tvm': a custom CUDA kernel implementation of our sliding window attention
+    # 'sliding_chunks': a PyTorch implementation of our sliding window attention
+    config.attention_mode = 'sliding_chunks'  # 'tvm' and 'sliding_chunks'
+
+    model = Longformer.from_pretrained('longformer-base-4096/', config=config)
     tokenizer = RobertaTokenizer.from_pretrained('roberta-base')
     tokenizer.max_len = model.config.max_position_embeddings
 
@@ -53,14 +60,18 @@ The code snippit below and the TriviaQA scripts are updated to use this new impl
  
     input_ids = torch.tensor(tokenizer.encode(SAMPLE_TEXT)).unsqueeze(0)  # batch of size 1
 
-    model = model.cuda()  # doesn't work on CPU
-    input_ids = input_ids.cuda()
+    # TVM code doesn't work on CPU. Uncomment this for `config.attention_mode = 'tvm'`
+    # model = model.cuda(); input_ids = input_ids.cuda()
 
     # Attention mask values -- 0: no attention, 1: local attention, 2: global attention
     attention_mask = torch.ones(input_ids.shape, dtype=torch.long, device=input_ids.device) # initialize to local attention
     attention_mask[:, [1, 4, 21,]] =  2  # Set global attention based on the task. For example,
                                          # classification: the <s> token
                                          # QA: question tokenss
+
+    # padding seqlen to the nearest multiple of 512. Needed for the 'sliding_chunks' attention
+    input_ids, attention_mask = pad_to_window_size(
+            input_ids, attention_mask, config.attention_window[0], tokenizer.pad_token_id)
 
     output = model(input_ids, attention_mask=attention_mask)[0]
     ```
