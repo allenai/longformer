@@ -67,7 +67,7 @@ The code snippit below and the TriviaQA scripts are updated to use this new impl
     attention_mask = torch.ones(input_ids.shape, dtype=torch.long, device=input_ids.device) # initialize to local attention
     attention_mask[:, [1, 4, 21,]] =  2  # Set global attention based on the task. For example,
                                          # classification: the <s> token
-                                         # QA: question tokenss
+                                         # QA: question tokens
 
     # padding seqlen to the nearest multiple of 512. Needed for the 'sliding_chunks' attention
     input_ids, attention_mask = pad_to_window_size(
