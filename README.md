@@ -1,6 +1,25 @@
 # <p align=center>`Longformer`</p>
 `Longformer` is a BERT-like model for long documents.
 
+**\*\*\*\*\* New April 27th, 2020: A PyToch implementation of the sliding window attention  \*\*\*\*\***
+
+We added a PyTorch implementation of the sliding window attention that doesn't require the custom CUDA kernel. It is limited in functionality but more convenient to use for finetuning on downstream tasks. 
+
+Limitations: 
+- Uses 2x more memory than our custom CUDA kernel
+- Only works for the no-dilation case
+- Doesn't support the autoregressive case
+- As a result, it is not suitable for language modeling
+
+However: 
+- No custom CUDA kernel means it works on all devices including CPU and TPU (which the CUDA kernel doesn't support)
+- Supports FP16, which offsets the 2x memory increase
+- Our pretrained model doesn't use dilation making this implementation a good choise for finetuning on downstream tasks
+
+The code snippit below and the TriviaQA scripts are updated to use this new implementation.
+
+**\*\*\*\*\* End new information \*\*\*\*\***
+
 ### How to use
 
 1. Download pretrained model
@@ -24,7 +43,7 @@
     import torch
     from longformer.longformer import Longformer
     from transformers import RobertaTokenizer
-
+    # TODO: update to use slidingchunks
     model = Longformer.from_pretrained('longformer-base-4096/')
     tokenizer = RobertaTokenizer.from_pretrained('roberta-base')
     tokenizer.max_len = model.config.max_position_embeddings
