@@ -14,7 +14,7 @@ Limitations:
 However: 
 - No custom CUDA kernel means it works on all devices including CPU and TPU (which the CUDA kernel doesn't support)
 - Supports FP16, which offsets the 2x memory increase
-- Our pretrained model doesn't use dilation making this implementation a good choise for finetuning on downstream tasks
+- Our pretrained model doesn't use dilation making this implementation a good choice for finetuning on downstream tasks
 
 The code snippit below and the TriviaQA scripts are updated to use this new implementation.
 
