@@ -1,7 +1,7 @@
 # <p align=center>`Longformer`</p>
 `Longformer` is a BERT-like model for long documents.
 
-**\*\*\*\*\* New April 27th, 2020: A PyToch implementation of the sliding window attention  \*\*\*\*\***
+**\*\*\*\*\* New April 27th, 2020: A PyTorch implementation of the sliding window attention  \*\*\*\*\***
 
 We added a PyTorch implementation of the sliding window attention that doesn't require the custom CUDA kernel. It is limited in functionality but more convenient to use for finetuning on downstream tasks. 
 
