@@ -9,7 +9,7 @@ We added a PyTorch implementation of the sliding window attention that doesn't r
 
 **Limitations**: uses 2x more memory (but fp16 offsets that), and doesn’t support dilation and autoregressive attention (not needed for finetuning)
 
-Therefor, it is suitable for finetuning on dowstream tasks but not a good choice for language modeling. The code snippit below and the TriviaQA scripts were updated to use this new implementation.
+therefore, it is suitable for finetuning on dowstream tasks but not a good choice for language modeling. The code snippit below and the TriviaQA scripts were updated to use this new implementation.
 
 **\*\*\*\*\* End new information \*\*\*\*\***
 
