@@ -11,9 +11,7 @@ We added a PyTorch implementation of the sliding window attention that doesn't r
 - Uses 2x more memory (but fp16 offsets that)
 - Doesn’t support dilation and autoregressive attention (not needed for finetuning)
 
-Therefor, it is suitable for finetuning on dowstream tasks but not a good choice for language modeling. 
-
-The code snippit below and the TriviaQA scripts were updated to use this new implementation.
+Therefor, it is suitable for finetuning on dowstream tasks but not a good choice for language modeling. The code snippit below and the TriviaQA scripts were updated to use this new implementation.
 
 **\*\*\*\*\* End new information \*\*\*\*\***
 
@@ -45,7 +43,7 @@ The code snippit below and the TriviaQA scripts were updated to use this new imp
     # 'n2': for regular n2 attantion
     # 'tvm': a custom CUDA kernel implementation of our sliding window attention
     # 'sliding_chunks': a PyTorch implementation of our sliding window attention
-    config.attention_mode = 'sliding_chunks'  # 'tvm' and 'sliding_chunks'
+    config.attention_mode = 'sliding_chunks'
 
     model = Longformer.from_pretrained('longformer-base-4096/', config=config)
     tokenizer = RobertaTokenizer.from_pretrained('roberta-base')
@@ -82,7 +80,7 @@ The code snippit below and the TriviaQA scripts were updated to use this new imp
 
 ### CUDA kernel
 
-Our custom CUDA kernel is implemented in TVM.  For now, the kernel only works on GPUs and Linux. We tested it code on Ubuntu, Python 3.7, CUDA10, PyTorch 1.2.0. If it doesn't work for your environment, please create a new issue.
+Our custom CUDA kernel is implemented in TVM.  For now, the kernel only works on GPUs and Linux. We tested it on Ubuntu, Python 3.7, CUDA10, PyTorch 1.2.0. If it doesn't work for your environment, please create a new issue.
 
 **Compiling the kernel**: We already include the compiled binaries of the CUDA kernel, so most users won't need to compile it, but if you are intersted, check `scripts/cheatsheet.txt` for instructions.
 
