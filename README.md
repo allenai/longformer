@@ -5,10 +5,10 @@
 
 We added a PyTorch implementation of the sliding window attention that doesn't require the custom CUDA kernel. It is limited in functionality but more convenient to use for finetuning on downstream tasks. 
 
-**Advantage**: No custom CUDA kernel means support for CPU, TPU and fp16, which weren’t previously supported
+**Advantage**: supports CPU, TPU and fp16, which aren't supported by the custom CUDA kernel
 
 **Limitations**:
-- Uses 2x more memory than our custom CUDA kernel (but fp16 offsets that)
+- Uses 2x more memory (but fp16 offsets that)
 - Doesn’t support dilation and autoregressive attention (not needed for finetuning)
 
 Therefor, it is suitable for finetuning on dowstream tasks but not a good choice for language modeling. 
@@ -24,8 +24,6 @@ The code snippit below and the TriviaQA scripts were updated to use this new imp
   * [`longformer-large-4096`](https://ai2-s2-research.s3-us-west-2.amazonaws.com/longformer/longformer-large-4096.tar.gz)
 
 2. Install environment and code
-
-    Our code relies on a custom CUDA kernel, and for now it only works on GPUs and Linux. We tested our code on Ubuntu, Python 3.7, CUDA10, PyTorch 1.2.0. If it doesn't work for your environment, please create a new issue.
 
     ```bash
     conda create --name longformer python=3.7
@@ -58,7 +56,7 @@ The code snippit below and the TriviaQA scripts were updated to use this new imp
  
     input_ids = torch.tensor(tokenizer.encode(SAMPLE_TEXT)).unsqueeze(0)  # batch of size 1
 
-    # TVM code doesn't work on CPU. Uncomment this for `config.attention_mode = 'tvm'`
+    # TVM code doesn't work on CPU. Uncomment this if `config.attention_mode = 'tvm'`
     # model = model.cuda(); input_ids = input_ids.cuda()
 
     # Attention mask values -- 0: no attention, 1: local attention, 2: global attention
@@ -82,9 +80,11 @@ The code snippit below and the TriviaQA scripts were updated to use this new imp
 * Instructions: `scripts/cheatsheet.txt`
 
 
-### Compiling the CUDA kernel
+### CUDA kernel
 
-We already include the compiled binaries of the CUDA kernel, so most users won't need to compile it, but if you are intersted, check `scripts/cheatsheet.txt` for instructions.
+Our custom CUDA kernel is implemented in TVM.  For now, the kernel only works on GPUs and Linux. We tested it code on Ubuntu, Python 3.7, CUDA10, PyTorch 1.2.0. If it doesn't work for your environment, please create a new issue.
+
+**Compiling the kernel**: We already include the compiled binaries of the CUDA kernel, so most users won't need to compile it, but if you are intersted, check `scripts/cheatsheet.txt` for instructions.
 
 
 ### Known issues
