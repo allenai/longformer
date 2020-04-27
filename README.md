@@ -1,6 +1,18 @@
 # <p align=center>`Longformer`</p>
 `Longformer` is a BERT-like model for long documents.
 
+**\*\*\*\*\* New April 27th, 2020: A PyTorch implementation of the sliding window attention  \*\*\*\*\***
+
+We added a PyTorch implementation of the sliding window attention that doesn't require the custom CUDA kernel. It is limited in functionality but more convenient to use for finetuning on downstream tasks. 
+
+**Advantage**: supports CPU, TPU and fp16, which aren't supported by the custom CUDA kernel
+
+**Limitations**: uses 2x more memory (but fp16 offsets that), and doesn’t support dilation and autoregressive attention (not needed for finetuning)
+
+Therefor, it is suitable for finetuning on dowstream tasks but not a good choice for language modeling. The code snippit below and the TriviaQA scripts were updated to use this new implementation.
+
+**\*\*\*\*\* End new information \*\*\*\*\***
+
 ### How to use
 
 1. Download pretrained model
@@ -8,8 +20,6 @@
   * [`longformer-large-4096`](https://ai2-s2-research.s3-us-west-2.amazonaws.com/longformer/longformer-large-4096.tar.gz)
 
 2. Install environment and code
-
-    Our code relies on a custom CUDA kernel, and for now it only works on GPUs and Linux. We tested our code on Ubuntu, Python 3.7, CUDA10, PyTorch 1.2.0. If it doesn't work for your environment, please create a new issue.
 
     ```bash
     conda create --name longformer python=3.7
@@ -22,10 +32,18 @@
 
     ```python
     import torch
-    from longformer.longformer import Longformer
+    from longformer.longformer import Longformer, LongformerConfig
+    from longformer.sliding_chunks import pad_to_window_size
     from transformers import RobertaTokenizer
 
-    model = Longformer.from_pretrained('longformer-base-4096/')
+    config = LongformerConfig.from_pretrained('longformer-base-4096/') 
+    # choose the attention mode 'n2', 'tvm' or 'sliding_chunks'
+    # 'n2': for regular n2 attantion
+    # 'tvm': a custom CUDA kernel implementation of our sliding window attention
+    # 'sliding_chunks': a PyTorch implementation of our sliding window attention
+    config.attention_mode = 'sliding_chunks'
+
+    model = Longformer.from_pretrained('longformer-base-4096/', config=config)
     tokenizer = RobertaTokenizer.from_pretrained('roberta-base')
     tokenizer.max_len = model.config.max_position_embeddings
 
@@ -34,14 +52,18 @@
  
     input_ids = torch.tensor(tokenizer.encode(SAMPLE_TEXT)).unsqueeze(0)  # batch of size 1
 
-    model = model.cuda()  # doesn't work on CPU
-    input_ids = input_ids.cuda()   
+    # TVM code doesn't work on CPU. Uncomment this if `config.attention_mode = 'tvm'`
+    # model = model.cuda(); input_ids = input_ids.cuda()
 
     # Attention mask values -- 0: no attention, 1: local attention, 2: global attention
     attention_mask = torch.ones(input_ids.shape, dtype=torch.long, device=input_ids.device) # initialize to local attention
     attention_mask[:, [1, 4, 21,]] =  2  # Set global attention based on the task. For example,
                                          # classification: the <s> token
-                                         # QA: question tokenss
+                                         # QA: question tokens
+
+    # padding seqlen to the nearest multiple of 512. Needed for the 'sliding_chunks' attention
+    input_ids, attention_mask = pad_to_window_size(
+            input_ids, attention_mask, config.attention_window[0], tokenizer.pad_token_id)
 
     output = model(input_ids, attention_mask=attention_mask)[0]
     ```
@@ -54,9 +76,11 @@
 * Instructions: `scripts/cheatsheet.txt`
 
 
-### Compiling the CUDA kernel
+### CUDA kernel
 
-We already include the compiled binaries of the CUDA kernel, so most users won't need to compile it, but if you are intersted, check `scripts/cheatsheet.txt` for instructions.
+Our custom CUDA kernel is implemented in TVM.  For now, the kernel only works on GPUs and Linux. We tested it on Ubuntu, Python 3.7, CUDA10, PyTorch 1.2.0. If it doesn't work for your environment, please create a new issue.
+
+**Compiling the kernel**: We already include the compiled binaries of the CUDA kernel, so most users won't need to compile it, but if you are intersted, check `scripts/cheatsheet.txt` for instructions.
 
 
 ### Known issues

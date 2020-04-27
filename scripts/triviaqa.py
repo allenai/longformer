@@ -18,6 +18,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.overrides.data_parallel import LightningDistributedDataParallel
 
 from longformer.longformer import Longformer
+from longformer.sliding_chunks import pad_to_window_size
 
 
 class TriviaQADataset(Dataset):
@@ -265,6 +266,9 @@ class TriviaQA(pl.LightningModule):
 
     def load_model(self):
         model = Longformer.from_pretrained(args.model_path)
+        for layer in model.encoder.layer:
+            layer.attention.self.attention_mode = self.args.attention_mode
+            self.args.attention_window = layer.attention.self.attention_window
 
         print("Loaded model with config:")
         print(model.config)
@@ -285,9 +289,19 @@ class TriviaQA(pl.LightningModule):
         # global attention for the question tokens
         attention_mask[:, :question_end_index.item()] = 2
 
+        # sliding_chunks implemenation of selfattention requires that seqlen is multiple of window size
+        input_ids, attention_mask = pad_to_window_size(
+            input_ids, attention_mask, self.args.attention_window, self.tokenizer.pad_token_id)
+
         sequence_output = self.model(
                 input_ids,
                 attention_mask=attention_mask)[0]
+
+        # The pretrained TriviaQA model wasn't trained with padding, so remove padding tokens
+        # before computing loss and decoding.
+        padding_len = input_ids[0].eq(self.tokenizer.pad_token_id).sum()
+        if padding_len > 0:
+            sequence_output = sequence_output[:, :-padding_len]
 
         logits = self.qa_outputs(sequence_output)
         start_logits, end_logits = logits.split(1, dim=-1)
@@ -628,6 +642,9 @@ class TriviaQA(pl.LightningModule):
         parser.add_argument("--model_path", type=str, required=True,
                             help="Path to the checkpoint directory")
         parser.add_argument("--no_progress_bar", action='store_true', help="no progress bar. Good for printing")
+        parser.add_argument("--attention_mode", type=str, choices=['tvm', 'sliding_chunks'],
+                            default='sliding_chunks', help='Which implementation of selfattention to use')
+        parser.add_argument("--fp32", action='store_true', help="default is fp16. Use --fp32 to switch to fp32")
 
         return parser
 
@@ -672,6 +689,7 @@ def main(args):
                          logger=logger if not args.disable_checkpointing else False,
                          checkpoint_callback=checkpoint_callback if not args.disable_checkpointing else False,
                          show_progress_bar=not args.no_progress_bar,
+                         use_amp=not args.fp32, amp_level='O2',
                          )
     if not args.test:
         trainer.fit(model)
