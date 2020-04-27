@@ -5,13 +5,13 @@
 
 We added a PyTorch implementation of the sliding window attention that doesn't require the custom CUDA kernel. It is limited in functionality but more convenient to use for finetuning on downstream tasks. 
 
-Advantage: No custom CUDA kernel means support for CPU, TPU and fp16, which weren’t previously supported
+**Advantage**: No custom CUDA kernel means support for CPU, TPU and fp16, which weren’t previously supported
 
-Limitations:
+**Limitations**:
 - Uses 2x more memory than our custom CUDA kernel (but fp16 offsets that)
-- Doesn’t support dilation and autoregressive attention
+- Doesn’t support dilation and autoregressive attention (not needed for finetuning)
 
-Therefor, it is suitable for finetuning on dowstream tasks (no dilation, fp16 reduces memory) but not a good choice for language modeling. 
+Therefor, it is suitable for finetuning on dowstream tasks but not a good choice for language modeling. 
 
 The code snippit below and the TriviaQA scripts were updated to use this new implementation.
 
