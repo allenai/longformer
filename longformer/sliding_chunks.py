@@ -40,7 +40,7 @@ def _chunk(x, w):
 def sliding_chunks_matmul_qk(q: torch.Tensor, k: torch.Tensor, w: int, padding_value: float):
     '''Matrix multiplicatio of query x key tensors using with a sliding window attention pattern.
     This implementation splits the input into overlapping chunks of size 2w (e.g. 512 for pretrained Longformer)
-    with an overlap of size'''
+    with an overlap of size w'''
     bsz, seqlen, num_heads, head_dim = q.size()
     assert seqlen % (w * 2) == 0
     assert q.size() == k.size()
