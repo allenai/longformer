@@ -291,7 +291,7 @@ def _get_invalid_locations_mask_fixed_dilation(seq_len: int, w: int, d: int):
         diagonal_mask = torch.zeros(seq_len, device='cpu', dtype=torch.uint8)
         diagonal_mask[:-j] = 1
         diagonals_list.append(diagonal_mask)
-    return torch.stack(diagonals_list, dim=-1).cuda()
+    return torch.stack(diagonals_list, dim=-1)
 
 @lru_cache()
 def _get_invalid_locations_mask(w: int, d: Union[torch.Tensor,int], autoregressive: bool, device: str):
