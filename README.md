@@ -78,7 +78,7 @@ therefore, it is suitable for finetuning on dowstream tasks but not a good choic
 
 ### CUDA kernel
 
-Our custom CUDA kernel is implemented in TVM.  For now, the kernel only works on GPUs and Linux. We tested it on Ubuntu, Python 3.7, CUDA10, PyTorch 1.2.0. If it doesn't work for your environment, please create a new issue.
+Our custom CUDA kernel is implemented in TVM.  For now, the kernel only works on GPUs and Linux. We tested it on Ubuntu, Python 3.7, CUDA10, PyTorch >= 1.2.0. If it doesn't work for your environment, please create a new issue.
 
 **Compiling the kernel**: We already include the compiled binaries of the CUDA kernel, so most users won't need to compile it, but if you are intersted, check `scripts/cheatsheet.txt` for instructions.
 
