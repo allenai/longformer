@@ -45,7 +45,7 @@ therefore, it is suitable for finetuning on dowstream tasks but not a good choic
 
     model = Longformer.from_pretrained('longformer-base-4096/', config=config)
     tokenizer = RobertaTokenizer.from_pretrained('roberta-base')
-    tokenizer.max_len = model.config.max_position_embeddings
+    tokenizer.model_max_length = model.config.max_position_embeddings
 
     SAMPLE_TEXT = ' '.join(['Hello world! '] * 1000)  # long input document
     SAMPLE_TEXT = f'{tokenizer.cls_token}{SAMPLE_TEXT}{tokenizer.eos_token}'

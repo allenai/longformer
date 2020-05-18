@@ -256,9 +256,7 @@ class TriviaQA(pl.LightningModule):
         self.hparams = args
 
         self.tokenizer = RobertaTokenizer.from_pretrained('roberta-base')
-        self.tokenizer.max_len = self.args.max_seq_len
-        self.tokenizer.max_len_single_sentence = self.args.max_seq_len
-        self.tokenizer.max_len_sentences_pair = self.args.max_seq_len
+        self.tokenizer.model_max_length = self.args.max_seq_len
         self.model = self.load_model()
         self.num_labels = 2
         self.qa_outputs = torch.nn.Linear(self.model.config.hidden_size, self.num_labels)

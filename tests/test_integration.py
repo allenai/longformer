@@ -10,16 +10,15 @@ class TestEndToEnd(unittest.TestCase):
     def _run_test(self, device, dtype, attention_mode):
 
         config = LongformerConfig.from_pretrained(
-            '/net/s3/s2-research/beltagy/longformer/model_release/longformer-base-4096/config_orig.json')
+            '/net/s3/s2-research/beltagy/longformer/model_release/longformer-base-4096/config.json')
         config.attention_mode = attention_mode
         model = Longformer.from_pretrained(
             '/net/s3/s2-research/beltagy/longformer/model_release/longformer-base-4096/pytorch_model.bin',
             config=config)
         model = model.eval()
 
-        tokenizer = RobertaTokenizer.from_pretrained('roberta-base', max_len=1024)
-        from transformers.tokenization_roberta import PRETRAINED_POSITIONAL_EMBEDDINGS_SIZES
-        PRETRAINED_POSITIONAL_EMBEDDINGS_SIZES["roberta-base"] = 4096
+        tokenizer = RobertaTokenizer.from_pretrained('roberta-base')
+        tokenizer.model_max_length = 4096
 
         SAMPLE_TEXT = ' '.join(['Hello world! '] * 1025)  # long input document
         token_ids = tokenizer.encode(SAMPLE_TEXT)
