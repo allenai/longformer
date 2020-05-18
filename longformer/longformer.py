@@ -85,13 +85,23 @@ class LongformerSelfAttention(nn.Module):
             assert not self.autoregressive  # not supported
             assert self.attention_dilation == 1  # dilation is not supported
 
-    def forward(self, hidden_states, attention_mask=None, head_mask=None):
+    def forward(
+        self,
+        hidden_states,
+        attention_mask=None,
+        head_mask=None,
+        encoder_hidden_states=None,
+        encoder_attention_mask=None,
+    ):
         '''
         The `attention_mask` is changed in `BertModel.forward` from 0, 1, 2 to
             -ve: no attention
               0: local attention
             +ve: global attention
         '''
+        assert encoder_hidden_states is None, "`encoder_hidden_states` is not supported and should be None"
+        assert encoder_attention_mask is None, "`encoder_attention_mask` is not supported and shiould be None"
+
         if attention_mask is not None:
             attention_mask = attention_mask.squeeze(dim=2).squeeze(dim=1)
             key_padding_mask = attention_mask < 0
