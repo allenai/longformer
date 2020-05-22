@@ -48,8 +48,6 @@ therefore, it is suitable for finetuning on dowstream tasks but not a good choic
     tokenizer.model_max_length = model.config.max_position_embeddings
 
     SAMPLE_TEXT = ' '.join(['Hello world! '] * 1000)  # long input document
-    # Special tokens are inserted by the tokenzier
-    #SAMPLE_TEXT = f'{tokenizer.cls_token}{SAMPLE_TEXT}{tokenizer.eos_token}'
  
     input_ids = torch.tensor(tokenizer.encode(SAMPLE_TEXT)).unsqueeze(0)  # batch of size 1
 
