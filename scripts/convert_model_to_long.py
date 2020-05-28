@@ -132,6 +132,8 @@ def main():
         '--do_train',
         '--do_eval',
     ])
+    # NOTE: wikitext3 is not large enough, and 3k steps is 7 epochs.
+    # Consider doing one epoch on a larger dataset (800M tokens) instead.
     training_args.val_datapath = 'wikitext/wikitext-103-raw/wiki.valid.raw'
     training_args.train_datapath = 'wikitext/wikitext-103-raw/wiki.train.raw'
 
