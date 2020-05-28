@@ -70,7 +70,7 @@ def copy_proj_layers(model):
     return model
 
 
-def pretrain(args, model, tokenizer, eval_only):
+def pretrain(args, model, tokenizer, eval_only, model_path):
     val_dataset = TextDataset(tokenizer=tokenizer, file_path=args.val_datapath, block_size=tokenizer.max_len)
     if eval_only:
         train_dataset = val_dataset
@@ -85,13 +85,12 @@ def pretrain(args, model, tokenizer, eval_only):
     print(f'Initial eval loss: {eval_loss}')
 
     if not eval_only:
-        pass
-        # import ipdb; ipdb.set_trace()
+        trainer.train(model_path=model_path)
+        trainer.save_model()
 
-
-train_datapath = 'wikitext/wikitext-103-raw/wiki.train.raw'
-val_datapath = 'wikitext/wikitext-103-raw/wiki.valid.raw'
-device = 'cuda:0'
+        eval_loss = trainer.evaluate()
+        eval_loss = eval_loss['eval_loss']
+        print(f'Eval loss after pretraining: {eval_loss}')
 
 
 @dataclass
@@ -103,13 +102,31 @@ class ModelArgs:
 def main():
     parser = HfArgumentParser((TrainingArguments, ModelArgs,))
     training_args, model_args = parser.parse_args_into_dataclasses(look_for_args_file=False, args=[
-        '--output_dir', 'tmp/',
+        'script.py',
+        '--output_dir', 'tmp',
+        '--warmup_steps', '500',
+        '--learning_rate', '0.00003',
+        # '--lr_scheduler', 'constant',  # in the paper: polynomial_decay with power 3. Not supported in HF trainer
+        '--weight_decay', '0.01',
+        '--adam_epsilon', '1e-6',
+        '--max_steps', '3000',  # in the paper: 65k steps, but most training happens in the first 3k steps
+        '--logging_steps', '500',
+        '--save_steps', '500',
+        '--max_grad_norm', '5.0',
+        '--per_gpu_eval_batch_size', '8',
+        # NOTE: num of tokens per batch = batch size (8) x number of gpus (1) x gradient accumulation (8) x seqlen (4096) = 262144
+        '--per_gpu_train_batch_size', '8',
+        '--device', 'cuda0',  # one GPU
+        '--gradient_accumulation_steps', '8',
+        '--evaluate_during_training',
     ])
+    training_args.val_datapath = 'wikitext/wikitext-103-raw/wiki.valid.raw'
+    training_args.train_datapath = 'wikitext/wikitext-103-raw/wiki.train.raw'
 
     roberta_base = RobertaForMaskedLM.from_pretrained('roberta-base')
     roberta_base_tokenizer = RobertaTokenizerFast.from_pretrained('roberta-base')
     print('Evaluating roberta-base (seqlen: 512) for refernece ...')
-    pretrain(training_args, roberta_base, roberta_base_tokenizer, eval_only=True)
+    pretrain(training_args, roberta_base, roberta_base_tokenizer, eval_only=True, model_path=None)
 
     model_path = f'{training_args.output_dir}/roberta-base-{model_args.max_pos}'
     if not os.path.exists(model_path):
@@ -124,7 +141,7 @@ def main():
     model = RobertaLongForMaskedLM.from_pretrained(model_path)
 
     print(f'Pretraining roberta-base-{model_args.max_pos} ... ')
-    pretrain(training_args, model, tokenizer, eval_only=False)
+    pretrain(training_args, model, tokenizer, eval_only=False, model_path=model_path)
 
     print(f'Copying local projection layers into global projection layers ... ')
     model = copy_proj_layers(model)
