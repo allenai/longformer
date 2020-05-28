@@ -67,6 +67,9 @@ therefore, it is suitable for finetuning on dowstream tasks but not a good choic
     output = model(input_ids, attention_mask=attention_mask)[0]
     ```
 
+### Model pretraining
+
+[This notebook](https://github.com/allenai/longformer/blob/master/scripts/convert_model_to_long.ipynb) demonstrates our procedure for training Longformer starting from the RoBERTa checkpoint. The same procedure can be followed to get a long-version of other existing pretrained models. 
 
 ### TriviaQA
 
