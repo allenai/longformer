@@ -11,7 +11,7 @@ The release also includes `LongformerForQA` and other `LongformerForTaskName` wi
 
 2. We added a [notebook](https://colab.research.google.com/github/allenai/longformer/blob/master/scripts/convert_model_to_long.ipynb) to show how to convert an existing pretrained model into its "long" version. 
 
-3. Gradient checkpointing is in progress ([check PR](https://github.com/huggingface/transformers/pull/4659)), but in the  meantime, you can this branch https://github.com/ibeltagy/transformers/tree/grad_checkpointing. Gradient checkpointing can reduce memory usage significanlty (5x for `longformer-base-4096`) allowing longer sequences on smaller gpus. 
+3. Gradient checkpointing is in progress ([check PR](https://github.com/huggingface/transformers/pull/4659)), but in the  meantime, you can use this branch https://github.com/ibeltagy/transformers/tree/grad_checkpointing. Gradient checkpointing can reduce memory usage significanlty (5x for `longformer-base-4096`) allowing longer sequences on smaller gpus. 
 
 
 **\*\*\*\*\* New April 27th, 2020: A PyTorch implementation of the sliding window attention  \*\*\*\*\***
