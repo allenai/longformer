@@ -16,7 +16,7 @@ docker run -it --gpus all  --mount type=bind,source="$(pwd)",target=/code my_tvm
 cd code
 mv tvm tvm_runtime  # avoid collision between our small tvm runtime and the full tvm library
 rm longformer/lib/*  # remove old binaries
-python3 -m longformer.diagonaled_mm_tvm  # import diagonaled_mm_tvm to compile new ones
+python3 -c "from longformer.diagonaled_mm_tvm import *; DiagonaledMM._get_function('float32', 'cuda')"  #  compile new ones
 ls longformer/lib/  # check the `lib` dir for the new binaries
 mv tvm_runtime tvm  # don't forget to put them back
 
