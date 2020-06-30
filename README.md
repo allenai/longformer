@@ -14,7 +14,8 @@ model = LongformerModel.from_pretrained('allenai/longformer-base-4096', gradient
 
 1. `Longformer` is now integrated in the huggingface/transformers [release v2.11.0](https://github.com/huggingface/transformers/tree/v2.11.0). Now you can do
 ```
-model = AutoModel.from_pretrained("allenai/longformer-base-4096")
+from transformers import LongformerModel
+model = LongformerModel.from_pretrained("allenai/longformer-base-4096")
 ```
 The release also includes `LongformerForQA` and other `LongformerForTaskName` with automatic setting of global attention.
 
