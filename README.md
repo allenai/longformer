@@ -1,6 +1,15 @@
 # <p align=center>`Longformer`</p>
 `Longformer` is a BERT-like model for long documents.
 
+**\*\*\*\*\* New June 29th, 2020: Easier to use Gradient checkpointing \*\*\*\*\***
+
+Gradient checkpointing has been released with huggingface/transformers [release v3.0.0](https://github.com/huggingface/transformers/tree/v3.0.0). Gradient checkpointing reduces memory by 5x which makes it possible to process longer sequences on smaller GPUs. To use, try something like the following:
+
+```
+from transformers import LongformerModel
+model = LongformerModel.from_pretrained('allenai/longformer-base-4096', gradient_checkpointing=True)
+```
+
 **\*\*\*\*\* New June 2nd, 2020: Integrating with Huggingface + Train your own long model + Gradient checkpointing \*\*\*\*\***
 
 1. `Longformer` is now integrated in the huggingface/transformers [release v2.11.0](https://github.com/huggingface/transformers/tree/v2.11.0). Now you can do
