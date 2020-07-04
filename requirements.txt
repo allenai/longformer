@@ -1,4 +1,4 @@
-transformers @ git://github.com/ibeltagy/transformers.git@longformer_encoder_decoder#egg=transformers
+transformers @ git+http://github.com/ibeltagy/transformers.git@longformer_encoder_decoder#egg=transformers
 torch>=1.2.0
 tensorboardX
 pytorch-lightning>=0.7.6
