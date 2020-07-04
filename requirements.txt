@@ -1,5 +1,6 @@
+-e git://github.com/ibeltagy/transformers.git@longformer_encoder_decoder#egg=transformers
+
 torch>=1.2.0
-transformers>=2.2.0
 tensorboardX
-pytorch-lightning==0.6.0
-test-tube==0.7.5
+pytorch-lightning>=0.7.6
+test-tube
