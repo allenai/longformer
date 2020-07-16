@@ -5,6 +5,7 @@ import random
 import logging
 import numpy as np
 from tqdm import tqdm
+import time
 import torch
 from transformers import AutoTokenizer, AutoModelWithLMHead
 from transformers import DataCollatorForLanguageModeling
@@ -13,7 +14,7 @@ from transformers.optimization import AdamW, get_linear_schedule_with_warmup
 from torch.utils.data import Dataset, DataLoader
 import pytorch_lightning as ptl
 from pytorch_lightning.logging.test_tube import TestTubeLogger
-from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateLogger
 
 
 logging.basicConfig(level=logging.INFO)
@@ -112,33 +113,36 @@ class Pretrainer(ptl.LightningModule):
         self.data_collator = DataCollatorForLanguageModeling(
             tokenizer=tokenizer, mlm=True, mlm_probability=self.args.mlm_prob
         )
+        self.start_time = 0
 
-    def forward(self, input_ids=None, labels=None, loss_only=True):
+    def forward(self, input_ids=None, labels=None):
         # get the padding mask - 1 for NOT masked, 0 for MASKED/PAD
         attention_mask = (input_ids != self.pad_token_id).int()
 
-        if labels is not None:
-            # output is loss, prediction_scores, hidden_states
-            output = self.model(input_ids=input_ids, attention_mask=attention_mask, masked_lm_labels=labels)
-            if loss_only:
-                return output[0]
-            else:
-                return {"loss": output[0], "hidden_states": output[2]}
-        else:
-            # don't need to run the lm_head
-            assert not loss_only
-            output = self.model.roberta(input_ids=input_ids, attention_mask=attention_mask)
-            return {"hidden_states": output[2]}
+        # output is loss, prediction_scores, hidden_states
+        output = self.model(input_ids=input_ids, attention_mask=attention_mask, masked_lm_labels=labels)
+        return output[0]  # loss
 
     def training_step(self, batch, batch_nb):
         loss = self(**batch)
+        input_ids = batch['input_ids']
         tensorboard_logs = {
+            'input_size': input_ids.numel(),
+            'memory': torch.cuda.memory_allocated(loss.device) / 1024 ** 3,
+            'lr': self.trainer.optimizers[0].param_groups[0]['lr'],
             'mlm_loss': loss.detach(),
             'mlm_perplexity': torch.exp(loss).detach(),
+            'tokens per step': input_ids.numel() * self.args.grad_accum * self.trainer.world_size,
         }
+        if self.start_time != 0:
+            elapsed_time = time.time() - self.start_time
+            tensorboard_logs['time per batch'] = elapsed_time
+        self.start_time = time.time()
+
         return {'loss': loss, 'log': tensorboard_logs}
 
     def validation_step(self, batch, batch_nb):
+        self.start_time = 0  # reset training_step timer
         loss = self(**batch)
         tensorboard_logs = {
             'val_mlm_loss': loss.detach(),
@@ -148,7 +152,7 @@ class Pretrainer(ptl.LightningModule):
     def validation_epoch_end(self, outputs):
         avg_loss = torch.stack([x['log']['val_mlm_loss'] for x in outputs if 'val_mlm_loss' in x['log']]).mean()
         if self.use_ddp:
-            avg_loss = torch.distributed.all_reduce(avg_loss, op=torch.distributed.ReduceOp.SUM)
+            torch.distributed.all_reduce(avg_loss, op=torch.distributed.ReduceOp.SUM)
             avg_loss /= torch.distributed.get_world_size()
         avg_loss = avg_loss.item()
         logs = {'val_mlm_loss': avg_loss}
@@ -169,7 +173,7 @@ class Pretrainer(ptl.LightningModule):
         ]
         optimizer = AdamW(optimizer_grouped_parameters, lr=self.args.learning_rate, eps=self.args.adam_epsilon)
         scheduler = get_linear_schedule_with_warmup(
-            optimizer, num_warmup_steps=self.args.warmup_steps, num_training_steps=self.args.training_steps
+            optimizer, num_warmup_steps=self.args.warmup_steps, num_training_steps=self.args.train_steps
         )
 
         return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
@@ -215,12 +219,17 @@ class Pretrainer(ptl.LightningModule):
         parser.add_argument("--weight_decay", type=float, default=0.01)
         parser.add_argument("--learning_rate", type=float, default=1e-5)
         parser.add_argument("--adam_epsilon", type=float, default=1e-6)
-        parser.add_argument("--training_steps", type=int, default=0.01)
-        parser.add_argument("--warmup_steps", type=int, default=1000)
+        parser.add_argument("--grad_clip", type=float, default=0)
+        parser.add_argument("--warmup_steps", type=int, default=30, help='# warmup gradient updates')
+        parser.add_argument("--train_steps", type=int, default=100, help='# training gradient updates')
+        parser.add_argument("--val_every", type=int, default=25, help='# training gradient updates between evaluations')
+        parser.add_argument("--val_batches", type=int, default=20, help='# evaluation **batches**')
         parser.add_argument("--batch_size", type=int, default=8)
         parser.add_argument("--num_workers", type=int, default=0)
         parser.add_argument("--grad_accum", type=int, default=1)
-        parser.add_argument("--gpus", type=str, default='0')
+        # `--gpus` is reserved. Always set CUDA_VISIBLE_DEVICES to 0,1,2 ... n
+        # FIXME: PTL has a bug in gpu selection and it will always select gpus starting from 0 upward
+        parser.add_argument("--gpu_count", type=int, default=1)
         parser.add_argument("--resume", type=str, default=None)
         parser.add_argument("--num_tpu_cores", type=int, default=None)
 
@@ -255,18 +264,25 @@ def main(args):
         mode='min',
     )
 
-    args.gpus = [int(x) for x in args.gpus.split(',')]
+    # TODO: try gradient accumulation
+
+    args.val_every_batches = args.val_every * args.grad_accum  # convert val_every_steps to val_every_batches
     trainer = ptl.Trainer(
-        gpus=args.gpus,
+        gpus=args.gpu_count,
+        auto_select_gpus=False,
         num_tpu_cores=args.num_tpu_cores,
-        distributed_backend='ddp' if len(args.gpus) > 1 else None,
-        track_grad_norm=-1,
-        max_epochs=10000, min_epochs=0, max_steps=args.training_steps,  # run for many epochs, but stop after max_steps
+        distributed_backend='ddp' if args.gpu_count > 1 else None,
+        replace_sampler_ddp=False,
+        track_grad_norm=-1,  # TODO: add logging for gradient norm
+        max_epochs=10000, min_epochs=0, max_steps=args.train_steps,  # run for many epochs, but stop after max_steps
+        val_check_interval=args.val_every_batches, limit_val_batches=args.val_batches,
         early_stop_callback=None,
-        row_log_interval=25,
+        row_log_interval=10,
         logger=logger,
-        checkpoint_callback=checkpoint_callback,
+        checkpoint_callback=None,  # FIXME: checkpoint_callback,
         resume_from_checkpoint=args.resume,
+        gradient_clip_val=args.grad_clip,
+        callbacks=[LearningRateLogger()]
     )
     trainer.fit(pretrainer)
 
