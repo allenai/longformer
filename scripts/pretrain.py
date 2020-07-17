@@ -20,6 +20,9 @@ from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateLogger
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# TODO: Try on multiple machines
+# TODO: try on a single TPU
+# TODO: try on a TPU-pod
 
 class MMapTextDataset(Dataset):
     def __init__(self, mmap_filename, chunk_size):
@@ -129,19 +132,19 @@ class Pretrainer(ptl.LightningModule):
         tensorboard_logs = {
             'input_size': input_ids.numel(),
             'memory': torch.cuda.memory_allocated(loss.device) / 1024 ** 3,
-            'lr': self.trainer.optimizers[0].param_groups[0]['lr'],
             'mlm_loss': loss.detach(),
             'mlm_perplexity': torch.exp(loss).detach(),
-            'tokens per step': input_ids.numel() * self.args.grad_accum * self.trainer.world_size,
+            'token_per_step': input_ids.numel() * self.args.grad_accum * self.trainer.world_size,
         }
         if self.start_time != 0:
             elapsed_time = time.time() - self.start_time
-            tensorboard_logs['time per batch'] = elapsed_time
+            tensorboard_logs['second_per_batch'] = elapsed_time
         self.start_time = time.time()
 
         return {'loss': loss, 'log': tensorboard_logs}
 
     def validation_step(self, batch, batch_nb):
+        # TODO: log how long evaluation takes
         self.start_time = 0  # reset training_step timer
         loss = self(**batch)
         tensorboard_logs = {
@@ -228,7 +231,7 @@ class Pretrainer(ptl.LightningModule):
         parser.add_argument("--num_workers", type=int, default=0)
         parser.add_argument("--grad_accum", type=int, default=1)
         # `--gpus` is reserved. Always set CUDA_VISIBLE_DEVICES to 0,1,2 ... n
-        # FIXME: PTL has a bug in gpu selection and it will always select gpus starting from 0 upward
+        # TODO: PTL has a bug in gpu selection and it will always select gpus starting from 0 upward
         parser.add_argument("--gpu_count", type=int, default=1)
         parser.add_argument("--resume", type=str, default=None)
         parser.add_argument("--num_tpu_cores", type=int, default=None)
@@ -264,9 +267,7 @@ def main(args):
         mode='min',
     )
 
-    # TODO: try gradient accumulation
-
-    args.val_every_batches = args.val_every * args.grad_accum  # convert val_every_steps to val_every_batches
+    args.val_every *= args.grad_accum  # PTL is expecting number of batches_per_gpu
     trainer = ptl.Trainer(
         gpus=args.gpu_count,
         auto_select_gpus=False,
@@ -275,11 +276,12 @@ def main(args):
         replace_sampler_ddp=False,
         track_grad_norm=-1,  # TODO: add logging for gradient norm
         max_epochs=10000, min_epochs=0, max_steps=args.train_steps,  # run for many epochs, but stop after max_steps
-        val_check_interval=args.val_every_batches, limit_val_batches=args.val_batches,
+        val_check_interval=args.val_every, limit_val_batches=args.val_batches,
         early_stop_callback=None,
         row_log_interval=10,
         logger=logger,
-        checkpoint_callback=None,  # FIXME: checkpoint_callback,
+        checkpoint_callback=checkpoint_callback,
+        accumulate_grad_batches=args.grad_accum,
         resume_from_checkpoint=args.resume,
         gradient_clip_val=args.grad_clip,
         callbacks=[LearningRateLogger()]
