@@ -145,6 +145,7 @@ class Pretrainer(ptl.LightningModule):
 
     def validation_step(self, batch, batch_nb):
         # TODO: log how long evaluation takes
+        # TODO: reproduce roberta evaluation numbers on the longformer corpus
         self.start_time = 0  # reset training_step timer
         loss = self(**batch)
         tensorboard_logs = {
