@@ -4,6 +4,7 @@ import os
 import random
 import logging
 import numpy as np
+import math
 from tqdm import tqdm
 import time
 import torch
@@ -143,6 +144,7 @@ class Pretrainer(ptl.LightningModule):
             'input_size': input_ids.numel(),
             'memory': torch.cuda.memory_allocated(loss.device) / 1024 ** 3,
             'mlm_loss': loss.detach(),
+            'mlm_bpc': loss.detach()/math.log(2),
             'mlm_perplexity': torch.exp(loss).detach(),
             'token_per_step': input_ids.numel() * self.args.grad_accum * self.trainer.world_size,
         }
@@ -225,30 +227,42 @@ class Pretrainer(ptl.LightningModule):
     @staticmethod
     def add_args(parser):
         parser.add_argument("--seed", type=int, default=3)
+
+        # Dataset. Some of these params are only useful when generating the dataset cache
         parser.add_argument("--input_dir", type=str, required=True)
-        parser.add_argument("--save_dir", type=str, default='runs/')
-        parser.add_argument("--save_prefix", type=str, required=True)
         parser.add_argument("--train_dev_split", type=float, default=0.05)
+        parser.add_argument("--padded_chunks", type=bool, default=False)
         parser.add_argument("--seqlen", type=int, default=512)
+        parser.add_argument("--mlm_prob", type=float, default=0.15)
+
+        # HF model loading
         parser.add_argument("--tokenizer", type=str, default='roberta-base')
         parser.add_argument("--model", type=str, default='roberta-base')
-        parser.add_argument("--mlm_prob", type=float, default=0.15)
-        parser.add_argument("--padded_chunks", type=bool, default=False)
-        parser.add_argument("--weight_decay", type=float, default=0.01)
+
+        # Checkpointing and logging
+        parser.add_argument("--save_dir", type=str, default='runs/')
+        parser.add_argument("--save_prefix", type=str, required=True)
+        parser.add_argument("--resume", type=str, default=None)
+
+        # Training hyperparams
         parser.add_argument("--learning_rate", type=float, default=1e-5)
+        parser.add_argument("--train_steps", type=int, default=3000, help='# training grad. updates')
+        parser.add_argument("--warmup_steps", type=int, default=1000, help='# warmup grad. updates')
+        parser.add_argument("--val_every", type=int, default=1000, help='# training grad. updates between evaluations')
+        parser.add_argument("--val_batches", type=int, default=1000, help='# evaluation **batches**')
+        parser.add_argument("--weight_decay", type=float, default=0.01)
         parser.add_argument("--adam_epsilon", type=float, default=1e-6)
         parser.add_argument("--grad_clip", type=float, default=0)
-        parser.add_argument("--warmup_steps", type=int, default=30, help='# warmup gradient updates')
-        parser.add_argument("--train_steps", type=int, default=100, help='# training gradient updates')
-        parser.add_argument("--val_every", type=int, default=25, help='# training gradient updates between evaluations')
-        parser.add_argument("--val_batches", type=int, default=20, help='# evaluation **batches**')
-        parser.add_argument("--batch_size", type=int, default=8)
+
+        # RoBERTa's tokens_per_step = 2^18 = 512(seqlen) x 1(gpu_count) x 32(batch_size) x 16(grad_accum)
+        parser.add_argument("--batch_size", type=int, default=32)
+        parser.add_argument("--grad_accum", type=int, default=16)
+
+        # Compute resources
         parser.add_argument("--num_workers", type=int, default=0)
-        parser.add_argument("--grad_accum", type=int, default=1)
         # `--gpus` is reserved. Always set CUDA_VISIBLE_DEVICES to 0,1,2 ... n
         # TODO: PTL has a bug in gpu selection and it will always select gpus starting from 0 upward
         parser.add_argument("--gpu_count", type=int, default=1)
-        parser.add_argument("--resume", type=str, default=None)
         parser.add_argument("--num_tpu_cores", type=int, default=None)
 
         return parser
