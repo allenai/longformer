@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 # TODO: Try on multiple machines
 # TODO: try on a single TPU
 # TODO: try on a TPU-pod
+# TODO: PTL bug: https://github.com/PyTorchLightning/pytorch-lightning/issues/2635
 
 
 class MMapTextDataset(Dataset):
@@ -157,7 +158,6 @@ class Pretrainer(ptl.LightningModule):
 
     def validation_step(self, batch, batch_nb):
         # TODO: log how long evaluation takes
-        # TODO: reproduce roberta evaluation numbers on the longformer corpus
         self.start_time = 0  # reset training_step timer
         loss = self(**batch)
         tensorboard_logs = {
