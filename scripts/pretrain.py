@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 # TODO: try on a single TPU
 # TODO: try on a TPU-pod
 
+
 class MMapTextDataset(Dataset):
     def __init__(self, mmap_filename, chunk_size):
         self.num_instances = np.memmap(mmap_filename, mode='r', dtype=np.uint16).shape[0] // chunk_size
@@ -57,9 +58,9 @@ class MMapTextDataset(Dataset):
         train_chunks = []
         val_chunks = []
 
-        # TODO: process each shared in a separate worker
+        # TODO: process each shared in a separate worker and save their output to files
         # TODO: support multiple documents in one chunk instead of padding
-        # TODO: replace the in memory lists `train_chunks` and `train_chunks` with files
+
         for fname in tqdm(all_files):
             with open(fname, 'r') as fin:
                 for line in tqdm(fin):
