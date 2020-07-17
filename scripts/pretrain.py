@@ -46,7 +46,7 @@ class MMapTextDataset(Dataset):
 
     @staticmethod
     def raw_text_to_mmap(args):
-        tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
+        tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, use_fast=True)
         assert len(tokenizer) < 65535  # will use uint16 to store token ids
         all_files = glob.glob(f'{args.input_dir}/*.txt')
 
@@ -59,6 +59,7 @@ class MMapTextDataset(Dataset):
 
         # TODO: process each shared in a separate worker
         # TODO: support multiple documents in one chunk instead of padding
+        # TODO: replace the in memory lists `train_chunks` and `train_chunks` with files
         for fname in tqdm(all_files):
             with open(fname, 'r') as fin:
                 for line in tqdm(fin):
