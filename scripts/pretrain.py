@@ -166,6 +166,8 @@ class Pretrainer(ptl.LightningModule):
     def validation_epoch_end(self, outputs):
         avg_loss = torch.stack([x['log']['val_mlm_loss'] for x in outputs if 'val_mlm_loss' in x['log']]).mean()
         if self.use_ddp:
+            # TODO: PTL already doing this. Is it still needed here?
+            # https://github.com/PyTorchLightning/pytorch-lightning/blob/0.8.5/pytorch_lightning/metrics/converters.py#L251
             torch.distributed.all_reduce(avg_loss, op=torch.distributed.ReduceOp.SUM)
             avg_loss /= torch.distributed.get_world_size()
         avg_loss = avg_loss.item()
@@ -195,6 +197,7 @@ class Pretrainer(ptl.LightningModule):
     def _get_loader(self, fname, is_train):
         dataset = MMapTextDataset(fname, chunk_size=self.args.seqlen)
 
+        # TODO: consider `replace_sampler_ddp=True` and removing the following if statement
         if self.trainer.use_ddp:
             sampler = torch.utils.data.distributed.DistributedSampler(dataset, shuffle=is_train)
             shuffle = False
