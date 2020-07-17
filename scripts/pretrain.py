@@ -55,34 +55,42 @@ class MMapTextDataset(Dataset):
             logger.info("Cache already exists. Remove the cache directory to regenerate")
             return
         os.mkdir(f'{args.input_dir}/cache/')
-        train_chunks = []
-        val_chunks = []
 
         # TODO: process each shared in a separate worker and save their output to files
-        # TODO: support multiple documents in one chunk instead of padding
 
+        chunks_list = []
         for fname in tqdm(all_files):
             with open(fname, 'r') as fin:
+                current_chunk = [tokenizer.bos_token]
                 for line in tqdm(fin):
                     if line.strip() == '':  # drop empty lines
                         continue
-                    chunks_list = train_chunks if random.random() > args.train_dev_split else val_chunks
                     tokens = tokenizer.tokenize(line)  # each line is one document
                     # generate chunks of length args.seqlen. The last chunk will be padded.
                     # padding last chunk is not great for longformer because many chunks will be mostly padding
-                    current_chunk = [tokenizer.bos_token]
+
                     for token in tokens:
                         if len(current_chunk) == args.seqlen - 1:  # chunk is full
                             current_chunk.append(tokenizer.eos_token)
                             chunks_list.append(current_chunk)
                             current_chunk = [tokenizer.bos_token]
                         current_chunk.append(token)
-                    current_chunk.extend([tokenizer.pad_token] * (args.seqlen - len(current_chunk)))
-                    current_chunk[args.seqlen - 1] = tokenizer.eos_token
-                    chunks_list.append(current_chunk)
+                    if args.padded_chunks:
+                        # fill the rest of the seqlen with pad
+                        current_chunk.extend([tokenizer.pad_token] * (args.seqlen - len(current_chunk)))
+                        current_chunk[args.seqlen - 1] = tokenizer.eos_token
+                        chunks_list.append(current_chunk)
+                        current_chunk = [tokenizer.bos_token]
+                    else:
+                        # one long doc with sep inbetween
+                        if len(current_chunk) < args.seqlen - 1:
+                            current_chunk.append(tokenizer.sep_token)
+        random.shuffle(chunks_list)
+        val_count = int(args.train_dev_split * len(chunks_list))
+        val_chunks = chunks_list[:val_count]
+        train_chunks = chunks_list[val_count:]
 
         def _tokenized_text_to_mmap(output_fname, chunks_list):
-            random.shuffle(chunks_list)
             num_chunks = len(chunks_list)
             all_token_ids = np.empty((num_chunks, args.seqlen), dtype=np.uint16)
             for k, chunk in enumerate(tqdm(chunks_list)):
@@ -222,6 +230,7 @@ class Pretrainer(ptl.LightningModule):
         parser.add_argument("--tokenizer", type=str, default='roberta-base')
         parser.add_argument("--model", type=str, default='roberta-base')
         parser.add_argument("--mlm_prob", type=float, default=0.15)
+        parser.add_argument("--padded_chunks", type=bool, default=False)
         parser.add_argument("--weight_decay", type=float, default=0.01)
         parser.add_argument("--learning_rate", type=float, default=1e-5)
         parser.add_argument("--adam_epsilon", type=float, default=1e-6)
