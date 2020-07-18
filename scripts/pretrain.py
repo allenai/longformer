@@ -27,7 +27,6 @@ logger = logging.getLogger(__name__)
 # DONE: testing resume from checkpoint
 # TODO: try on a single TPU
 # TODO: try on a TPU-pod
-# TODO: only one checkpoint per epoch is saved
 
 
 class MMapTextDataset(Dataset):
@@ -175,7 +174,6 @@ class Pretrainer(ptl.LightningModule):
             # https://github.com/PyTorchLightning/pytorch-lightning/blob/0.8.5/pytorch_lightning/metrics/converters.py#L251
             torch.distributed.all_reduce(avg_loss, op=torch.distributed.ReduceOp.SUM)
             avg_loss /= torch.distributed.get_world_size()
-        avg_loss = avg_loss.item()
         logs = {'val_mlm_loss': avg_loss}
         return {'log': logs, 'progress_bar': logs, "val_loss": avg_loss}
 
@@ -320,9 +318,11 @@ def main(args):
         filepath=os.path.join(args.save_dir, args.save_prefix, 'checkpoint'),
         prefix='',
         save_top_k=3,
+        save_last=True,
         verbose=True,
         monitor='val_loss',
         mode='min',
+        period=-1,  # to allow multiple checkpoints per epoch
     )
 
     args.val_every *= args.grad_accum  # PTL is expecting number of batches_per_gpu
