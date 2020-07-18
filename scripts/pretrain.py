@@ -26,7 +26,6 @@ logger = logging.getLogger(__name__)
 # TODO: try on a single TPU
 # TODO: try on a TPU-pod
 # TODO: try restarting and double check optimizer, lr and lr scheduler
-# TODO: try fp16
 
 
 class MMapTextDataset(Dataset):
@@ -313,6 +312,7 @@ def main(args):
         accumulate_grad_batches=args.grad_accum,
         resume_from_checkpoint=args.resume,
         gradient_clip_val=args.grad_clip,
+        precision=16, amp_level='O2',
         callbacks=[LearningRateLogger()]
     )
     trainer.fit(pretrainer)
