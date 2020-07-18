@@ -225,6 +225,12 @@ class Pretrainer(ptl.LightningModule):
     def val_dataloader(self):
         return self._get_loader(f'{self.args.input_dir}/cache/val.bin', False)
 
+    def grad_norm(self, norm_type):
+        # Override PTL `grad_norm` function to only return `total_grad_norm` instead norms of individual params
+        # TODO: grad_norm reporting needs to take fp16 loss scale into account
+        all_norms = [float(p.grad.data.norm(float(norm_type))) for p in self.parameters() if p.grad is not None]
+        return {'total_grad_norm': float(torch.tensor(all_norms).norm(norm_type))}
+
     @staticmethod
     def add_args(parser):
         parser.add_argument("--seed", type=int, default=3)
@@ -302,7 +308,7 @@ def main(args):
         num_tpu_cores=args.num_tpu_cores,
         distributed_backend='ddp' if args.gpu_count > 1 else None,
         replace_sampler_ddp=False,
-        track_grad_norm=-1,  # TODO: add logging for gradient norm
+        track_grad_norm=2,
         max_epochs=10000, min_epochs=0, max_steps=args.train_steps,  # run for many epochs, but stop after max_steps
         val_check_interval=args.val_every, limit_val_batches=args.val_batches,
         early_stop_callback=None,
@@ -313,7 +319,7 @@ def main(args):
         resume_from_checkpoint=args.resume,
         gradient_clip_val=args.grad_clip,
         precision=16, amp_level='O2',
-        callbacks=[LearningRateLogger()]
+        callbacks=[LearningRateLogger()],
     )
     trainer.fit(pretrainer)
 
