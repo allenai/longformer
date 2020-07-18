@@ -21,10 +21,12 @@ from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateLogger
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# DONE: reproduce RoBERTa numbers on the Longformer corpus
 # TODO: Try on multiple machines
 # TODO: try on a single TPU
 # TODO: try on a TPU-pod
-# TODO: PTL bug: https://github.com/PyTorchLightning/pytorch-lightning/issues/2635
+# TODO: try restarting and double check optimizer, lr and lr scheduler
+# TODO: try fp16
 
 
 class MMapTextDataset(Dataset):
@@ -260,9 +262,8 @@ class Pretrainer(ptl.LightningModule):
 
         # Compute resources
         parser.add_argument("--num_workers", type=int, default=0)
-        # `--gpus` is reserved. Always set CUDA_VISIBLE_DEVICES to 0,1,2 ... n
-        # TODO: PTL has a bug in gpu selection and it will always select gpus starting from 0 upward
-        parser.add_argument("--gpu_count", type=int, default=1)
+        parser.add_argument("--gpu_count", type=int, default=1,  # `--gpus` is reserved for internal use by PTL
+                            help="Number of gpus. This respects `CUDA_VISIBLE_DEVICES`")
         parser.add_argument("--num_tpu_cores", type=int, default=None)
 
         return parser
@@ -299,7 +300,6 @@ def main(args):
     args.val_every *= args.grad_accum  # PTL is expecting number of batches_per_gpu
     trainer = ptl.Trainer(
         gpus=args.gpu_count,
-        auto_select_gpus=False,
         num_tpu_cores=args.num_tpu_cores,
         distributed_backend='ddp' if args.gpu_count > 1 else None,
         replace_sampler_ddp=False,
