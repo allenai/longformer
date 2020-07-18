@@ -22,9 +22,12 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # DONE: reproduce RoBERTa numbers on the Longformer corpus
+# DONE: testing ddp single machine
+# DONE: testing ddp multiple machines
+# DONE: testing resume from checkpoint
 # TODO: try on a single TPU
 # TODO: try on a TPU-pod
-# TODO: try restarting and double check optimizer, lr and lr scheduler
+# TODO: only one checkpoint per epoch is saved
 
 
 class MMapTextDataset(Dataset):
@@ -168,7 +171,7 @@ class Pretrainer(ptl.LightningModule):
     def validation_epoch_end(self, outputs):
         avg_loss = torch.stack([x['log']['val_mlm_loss'] for x in outputs if 'val_mlm_loss' in x['log']]).mean()
         if self.use_ddp:
-            # TODO: PTL already doing this. Is it still needed here?
+            # TODO: PTL is already doing this. Is it still needed here?
             # https://github.com/PyTorchLightning/pytorch-lightning/blob/0.8.5/pytorch_lightning/metrics/converters.py#L251
             torch.distributed.all_reduce(avg_loss, op=torch.distributed.ReduceOp.SUM)
             avg_loss /= torch.distributed.get_world_size()
@@ -189,11 +192,10 @@ class Pretrainer(ptl.LightningModule):
                 "weight_decay": 0.0,
             },
         ]
-        optimizer = AdamW(optimizer_grouped_parameters, lr=self.args.learning_rate, eps=self.args.adam_epsilon)
+        optimizer = AdamW(optimizer_grouped_parameters, lr=self.args.lr, eps=self.args.adam_epsilon)
         scheduler = get_linear_schedule_with_warmup(
             optimizer, num_warmup_steps=self.args.warmup_steps, num_training_steps=self.args.train_steps
         )
-
         return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
 
     def _get_loader(self, fname, is_train):
@@ -247,11 +249,15 @@ class Pretrainer(ptl.LightningModule):
 
         # Checkpointing and logging
         parser.add_argument("--save_dir", type=str, default='runs/')
-        parser.add_argument("--save_prefix", type=str, required=True)
-        parser.add_argument("--resume", type=str, default=None)
+        parser.add_argument("--save_prefix", type=str, required=True,
+                            help="path of output directory is --save_dir/--save_prefix")
+        parser.add_argument("--resume", type=str, default=None,  # It is better to use a different output dir.
+                            help="Path to a checkpoint to load model weights and training state. It overwrites args")
+        parser.add_argument("--resume_model_only", type=str, default=None,
+                            help="Path to a checkpoint to load model weights but not training state")
 
         # Training hyperparams
-        parser.add_argument("--learning_rate", type=float, default=1e-5)
+        parser.add_argument("--lr", type=float, default=1e-5)
         parser.add_argument("--train_steps", type=int, default=3000, help='# training grad. updates')
         parser.add_argument("--warmup_steps", type=int, default=1000, help='# warmup grad. updates')
         parser.add_argument("--val_every", type=int, default=1000, help='# training grad. updates between evaluations')
@@ -295,7 +301,10 @@ def main(args):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed * 10000)
 
-    pretrainer = Pretrainer(args)
+    if args.resume_model_only is not None:
+        pretrainer = Pretrainer.load_from_checkpoint(args.resume_model_only, args)
+    else:
+        pretrainer = Pretrainer(args)
 
     # logger here is a SummaryWritter for tensorboard
     # it is used by the trainer, and certain return variables
