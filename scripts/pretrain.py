@@ -22,7 +22,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # DONE: reproduce RoBERTa numbers on the Longformer corpus
-# TODO: Try on multiple machines
 # TODO: try on a single TPU
 # TODO: try on a TPU-pod
 # TODO: try restarting and double check optimizer, lr and lr scheduler
@@ -259,7 +258,7 @@ class Pretrainer(ptl.LightningModule):
         parser.add_argument("--val_batches", type=int, default=1000, help='# evaluation **batches**')
         parser.add_argument("--weight_decay", type=float, default=0.01)
         parser.add_argument("--adam_epsilon", type=float, default=1e-6)
-        parser.add_argument("--grad_clip", type=float, default=0)
+        parser.add_argument("--grad_clip", type=float, default=0)  # TODO: test this with fp16. Likely not working
 
         # RoBERTa's tokens_per_step = 2^18 = 512(seqlen) x 1(gpu_count) x 32(batch_size) x 16(grad_accum)
         parser.add_argument("--batch_size", type=int, default=32)
@@ -269,6 +268,21 @@ class Pretrainer(ptl.LightningModule):
         parser.add_argument("--num_workers", type=int, default=0)
         parser.add_argument("--gpu_count", type=int, default=1,  # `--gpus` is reserved for internal use by PTL
                             help="Number of gpus. This respects `CUDA_VISIBLE_DEVICES`")
+
+        # For multi-node training, use the PyTorch launch script. The script and instructions can be found here:
+        # https://github.com/pytorch/pytorch/blob/master/torch/distributed/launch.py.
+        # To run PTL in a mode compatible with the launch script, two things are needed:
+        #   - pass the argument `--use_env` to `torch.distributed.launch`
+        #   - make sure `--nproc_per_node` matches `--gpu_count` and `--nnodes` matches `--node_count`.
+        # For example, to run on 2 nodes, 3 gpus each, the command line on node rank 1 would be like:
+        #   >>>> python -m torch.distributed.launch  \
+        #               --use_env  --nnodes 2  --nproc_per_node 3  \
+        #               --node_rank 1  --master_addr s2-server4  --master_port 12343  \
+        #               scripts/pretrain.py  \
+        #               --gpu_count 2  --node_count 2  \
+        #               --input_dir my_data_dir  --save_prefix test_multinode
+        parser.add_argument("--node_count", type=int, default=1,
+                            help="Number of nodes. It needs to match --nnodes of torch.distributed.launch")
         parser.add_argument("--num_tpu_cores", type=int, default=None)
 
         return parser
@@ -305,8 +319,9 @@ def main(args):
     args.val_every *= args.grad_accum  # PTL is expecting number of batches_per_gpu
     trainer = ptl.Trainer(
         gpus=args.gpu_count,
+        num_nodes=args.node_count,
         num_tpu_cores=args.num_tpu_cores,
-        distributed_backend='ddp' if args.gpu_count > 1 else None,
+        distributed_backend='ddp' if (args.gpu_count > 1 or args.node_count > 1) else None,
         replace_sampler_ddp=False,
         track_grad_norm=2,
         max_epochs=10000, min_epochs=0, max_steps=args.train_steps,  # run for many epochs, but stop after max_steps
