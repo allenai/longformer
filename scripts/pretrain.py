@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 # DONE: testing resume from checkpoint
 # TODO: try on a single TPU
 # TODO: try on a TPU-pod
+# TODO: run on beaker on ai2-server1/2
 
 
 class MMapTextDataset(Dataset):
