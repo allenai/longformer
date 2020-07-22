@@ -82,13 +82,3 @@ import torch_xla.debug.metrics as met; print(met.metrics_report())
 curl -X POST http://10.125.212.42:8475/requestversion/pytorch-dev20200722
 
 /usr/share/torch-xla-nightly/pytorch/xla/scripts/debug_run.py --outfile debug.tar.gz -- python -u scripts/test_tpu.py
-
-  XLA_IR_DEBUG=1                                                                                                                                     
-  XRT_TPU_CONFIG=tpu_worker;0;10.125.212.42:8470                                                                    
-  TF_CPP_LOG_THREAD_ID=1                                                                                              
-  TF_CPP_MIN_LOG_LEVEL=0                                                                                                                 
-  XLA_HLO_DEBUG=1                                                                                                                   
-  XLA_DUMP_FATAL_STACK=1                                                                                                                          
-  TF_CPP_VMODULE=tensor=5,computation_client=5,xrt_computation_client=5,aten_xla_type=1                                                             
-  XLA_SAVE_TENSORS_FILE=/tmp/debug_run-beltagy4-beltagy/graphs                                                                                                        
-  XLA_METRICS_FILE=/tmp/debug_run-beltagy4-beltagy/metrics          
