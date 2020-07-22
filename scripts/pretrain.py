@@ -26,6 +26,12 @@ logger = logging.getLogger(__name__)
 # DONE: testing ddp multiple machines
 # DONE: testing resume from checkpoint
 # TODO: try on a single TPU
+# - tie weights
+# - tensorboard
+# - getrank
+# - barrier
+# - val all_reduce
+# - checkpointing
 # TODO: try on a TPU-pod
 # TODO: run on beaker on ai2-server1/2
 
@@ -257,7 +263,7 @@ class Pretrainer(ptl.LightningModule):
         parser.add_argument("--seed", type=int, default=3)
 
         # Dataset. Some of these params are only useful when generating the dataset cache
-        parser.add_argument("--input_dir", type=str, required=True)
+        parser.add_argument("--input_dir", type=str, default='/net/nfs.corp/s2-research/beltagy/longformer/data/')
         parser.add_argument("--train_dev_split", type=float, default=0.05)
         parser.add_argument("--padded_chunks", type=bool, default=False)
         parser.add_argument("--seqlen", type=int, default=512)
@@ -269,7 +275,7 @@ class Pretrainer(ptl.LightningModule):
 
         # Checkpointing and logging
         parser.add_argument("--save_dir", type=str, default='runs/')
-        parser.add_argument("--save_prefix", type=str, required=True,
+        parser.add_argument("--save_prefix", type=str, default='test',
                             help="path of output directory is --save_dir/--save_prefix")
         parser.add_argument("--resume", type=str, default=None,  # It is better to use a different output dir.
                             help="Path to a checkpoint to load model weights and training state. It overwrites args")
@@ -291,6 +297,7 @@ class Pretrainer(ptl.LightningModule):
         parser.add_argument("--grad_accum", type=int, default=1)
 
         # Compute resources
+        parser.add_argument("--fp16", type=bool, default=False)
         parser.add_argument("--num_workers", type=int, default=0)
         parser.add_argument("--gpu_count", type=int, default=1,  # `--gpus` is reserved for internal use by PTL
                             help="Number of gpus. This respects `CUDA_VISIBLE_DEVICES`")
@@ -365,7 +372,7 @@ def main(args):
         accumulate_grad_batches=args.grad_accum,
         resume_from_checkpoint=args.resume,
         gradient_clip_val=args.grad_clip,
-        precision=16, amp_level='O2',
+        precision=16 if args.fp16 else 32, amp_level='O2',
         num_sanity_val_steps=2,
         callbacks=[LearningRateLogger()],
     )
