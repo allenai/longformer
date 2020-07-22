@@ -1,6 +1,18 @@
 # <p align=center>`Longformer`</p>
 `Longformer` is a BERT-like model for long documents.
 
+**\*\*\*\*\* Work In Progress: LongformerEncoderDecoder \*\*\*\*\***
+
+A `LongformerEncoderDecoder` model is now available. It is geared towards summarization where the input is long but the output is relatively shorter. The following code snippet loads a `LongformerEncoderDecoder` checkpointing started from `BartLarge`. With gradient checkpointing, fp16, and 48GB gpu, the input length be up to 12K. 
+```
+pip install git+https://github.com/allenai/longformer.git@encoderdecoder  
+
+# checkpoint: https://ai2-s2-research.s3-us-west-2.amazonaws.com/longformer/longformer-encdec-large-12288.tar.gz
+
+from longformer import LongformerEncoderDecoderForConditionalGeneration
+model = LongformerEncoderDecoderForConditionalGeneration.from_pretrained(downloaded_checkpoint, gradient_checkpointing=True)
+```
+
 **\*\*\*\*\* New June 2nd, 2020: Integrating with Huggingface + Train your own long model + Gradient checkpointing \*\*\*\*\***
 
 1. `Longformer` is now integrated in the huggingface/transformers [release v2.11.0](https://github.com/huggingface/transformers/tree/v2.11.0). Now you can do
