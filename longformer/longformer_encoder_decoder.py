@@ -7,8 +7,11 @@ from transformers.modeling_bart import BartConfig, BartForConditionalGeneration
 class LongformerEncoderDecoderForConditionalGeneration(BartForConditionalGeneration):
     def __init__(self, config):
         super().__init__(config)
-        for i, layer in enumerate(self.model.encoder.layers):
-            layer.self_attn = LongformerSelfAttentionForBart(config, layer_id=i)
+        if config.attention_mode == 'n2':
+            pass  # do nothing, use BertSelfAttention instead
+        else:
+            for i, layer in enumerate(self.model.encoder.layers):
+                layer.self_attn = LongformerSelfAttentionForBart(config, layer_id=i)
 
 
 class LongformerEncoderDecoderConfig(BartConfig):
