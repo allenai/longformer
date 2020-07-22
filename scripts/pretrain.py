@@ -30,6 +30,14 @@ logger = logging.getLogger(__name__)
 # TODO: run on beaker on ai2-server1/2
 
 
+try:
+    import torch_xla.core.xla_model as xm
+except ImportError:
+    XLA_AVAILABLE = False
+else:
+    XLA_AVAILABLE = True
+
+
 class MMapTextDataset(Dataset):
     def __init__(self, mmap_filename, chunk_size):
         self.num_instances = np.memmap(mmap_filename, mode='r', dtype=np.uint16).shape[0] // chunk_size
@@ -146,16 +154,17 @@ class Pretrainer(ptl.LightningModule):
         input_ids = batch['input_ids']
         tensorboard_logs = {
             'input_size': input_ids.numel(),
-            'memory': torch.cuda.memory_allocated(loss.device) / 1024 ** 3,
-            'mlm_loss': loss.detach(),
-            'mlm_bpc': loss.detach()/math.log(2),
-            'mlm_perplexity': torch.exp(loss).detach(),
+            'mlm_loss': loss,
+            'mlm_bpc': loss/math.log(2),
+            'mlm_perplexity': torch.exp(loss),
             'token_per_step': input_ids.numel() * self.args.grad_accum * self.trainer.world_size,
         }
         if self.start_time != 0:
             elapsed_time = time.time() - self.start_time
             tensorboard_logs['second_per_batch'] = elapsed_time
         self.start_time = time.time()
+        if not XLA_AVAILABLE:
+            tensorboard_logs['memory'] = torch.cuda.memory_allocated(loss.device) / 1024 ** 3
 
         return {'loss': loss, 'log': tensorboard_logs}
 
@@ -204,6 +213,14 @@ class Pretrainer(ptl.LightningModule):
         if self.trainer.use_ddp:
             sampler = torch.utils.data.distributed.DistributedSampler(dataset, shuffle=is_train)
             shuffle = False
+        elif self.trainer.use_tpu:
+            sampler = torch.utils.data.distributed.DistributedSampler(
+                dataset,
+                num_replicas=xm.xrt_world_size(),
+                rank=xm.get_ordinal(),
+                shuffle=is_train,
+            )
+            shuffle = False
         else:
             sampler = None
             shuffle = is_train
@@ -227,6 +244,10 @@ class Pretrainer(ptl.LightningModule):
 
     def grad_norm(self, norm_type):
         # Override PTL `grad_norm` function to only return `total_grad_norm` instead norms of individual params
+
+        if XLA_AVAILABLE:
+            return {}  # computing grad_norm one parameter at a time takes forever on TPU
+
         # TODO: grad_norm reporting needs to take fp16 loss scale into account
         all_norms = [float(p.grad.data.norm(float(norm_type))) for p in self.parameters() if p.grad is not None]
         return {'total_grad_norm': float(torch.tensor(all_norms).norm(norm_type))}
@@ -266,8 +287,8 @@ class Pretrainer(ptl.LightningModule):
         parser.add_argument("--grad_clip", type=float, default=0)  # TODO: test this with fp16. Likely not working
 
         # RoBERTa's tokens_per_step = 2^18 = 512(seqlen) x 1(gpu_count) x 32(batch_size) x 16(grad_accum)
-        parser.add_argument("--batch_size", type=int, default=32)
-        parser.add_argument("--grad_accum", type=int, default=16)
+        parser.add_argument("--batch_size", type=int, default=8)
+        parser.add_argument("--grad_accum", type=int, default=1)
 
         # Compute resources
         parser.add_argument("--num_workers", type=int, default=0)
@@ -288,7 +309,7 @@ class Pretrainer(ptl.LightningModule):
         #               --input_dir my_data_dir  --save_prefix test_multinode
         parser.add_argument("--node_count", type=int, default=1,
                             help="Number of nodes. It needs to match --nnodes of torch.distributed.launch")
-        parser.add_argument("--num_tpu_cores", type=int, default=None)
+        parser.add_argument("--tpu_core_count", type=int, default=None)
 
         return parser
 
@@ -330,20 +351,22 @@ def main(args):
     trainer = ptl.Trainer(
         gpus=args.gpu_count,
         num_nodes=args.node_count,
-        num_tpu_cores=args.num_tpu_cores,
+        num_tpu_cores=args.tpu_core_count,
         distributed_backend='ddp' if (args.gpu_count > 1 or args.node_count > 1) else None,
         replace_sampler_ddp=False,
         track_grad_norm=2,
         max_epochs=10000, min_epochs=0, max_steps=args.train_steps,  # run for many epochs, but stop after max_steps
         val_check_interval=args.val_every, limit_val_batches=args.val_batches,
         early_stop_callback=None,
-        row_log_interval=10,
+        row_log_interval=16,
+        progress_bar_refresh_rate=16,
         logger=logger,
         checkpoint_callback=checkpoint_callback,
         accumulate_grad_batches=args.grad_accum,
         resume_from_checkpoint=args.resume,
         gradient_clip_val=args.grad_clip,
         precision=16, amp_level='O2',
+        num_sanity_val_steps=2,
         callbacks=[LearningRateLogger()],
     )
     trainer.fit(pretrainer)
