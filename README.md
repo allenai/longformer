@@ -1,6 +1,11 @@
 # <p align=center>`Longformer`</p>
 `Longformer` is a BERT-like model for long documents.
 
+**\*\*\*\*\* New July 23rd, 2020: Speed degradation \*\*\*\*\***
+
+A significant speed degradation in the hugginface/transformers was recenlty discovered and fixed (check [this PR](https://github.com/huggingface/transformers/pull/5811) for details). To avoid this problem, either use the old [release v2.11.0](https://github.com/huggingface/transformers/tree/v2.11.0) but it doesn't support gradient checkpointing, or use the master branch. This problem should be fixed with the next hugginface/transformers release.
+
+
 **\*\*\*\*\* New June 29th, 2020: Easier to use Gradient checkpointing \*\*\*\*\***
 
 Gradient checkpointing has been released with huggingface/transformers [release v3.0.0](https://github.com/huggingface/transformers/tree/v3.0.0). Gradient checkpointing reduces memory by 5x which makes it possible to process longer sequences on smaller GPUs. To use, try something like the following:
