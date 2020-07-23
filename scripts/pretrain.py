@@ -30,8 +30,11 @@ logger = logging.getLogger(__name__)
 # - tensorboard
 # - getrank
 # - barrier
-# - val all_reduce
-# - checkpointing
+# - checkpointing (broken)
+# - gradient accumulation
+# - set_epoch bug
+# - gradient clipping
+# TODO: use AutoModelForMaskedLM and remove masked_lm_labels
 # TODO: try on a TPU-pod
 # TODO: run on beaker on ai2-server1/2
 
@@ -169,7 +172,7 @@ class Pretrainer(ptl.LightningModule):
             elapsed_time = time.time() - self.start_time
             tensorboard_logs['second_per_batch'] = elapsed_time
         self.start_time = time.time()
-        if not XLA_AVAILABLE:
+        if not self.use_tpu:
             tensorboard_logs['memory'] = torch.cuda.memory_allocated(loss.device) / 1024 ** 3
 
         return {'loss': loss, 'log': tensorboard_logs}
@@ -190,6 +193,9 @@ class Pretrainer(ptl.LightningModule):
             # https://github.com/PyTorchLightning/pytorch-lightning/blob/0.8.5/pytorch_lightning/metrics/converters.py#L251
             torch.distributed.all_reduce(avg_loss, op=torch.distributed.ReduceOp.SUM)
             avg_loss /= torch.distributed.get_world_size()
+        elif self.use_tpu:
+            avg_loss = xm.all_reduce(xm.REDUCE_SUM, avg_loss) / xm.xrt_world_size()
+
         logs = {'val_mlm_loss': avg_loss}
         return {'log': logs, 'progress_bar': logs, "val_loss": avg_loss}
 
@@ -251,7 +257,7 @@ class Pretrainer(ptl.LightningModule):
     def grad_norm(self, norm_type):
         # Override PTL `grad_norm` function to only return `total_grad_norm` instead norms of individual params
 
-        if XLA_AVAILABLE:
+        if self.use_tpu:
             return {}  # computing grad_norm one parameter at a time takes forever on TPU
 
         # TODO: grad_norm reporting needs to take fp16 loss scale into account
