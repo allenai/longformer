@@ -281,6 +281,7 @@ class Pretrainer(ptl.LightningModule):
                             help="Path to a checkpoint to load model weights and training state. It overwrites args")
         parser.add_argument("--resume_model_only", type=str, default=None,
                             help="Path to a checkpoint to load model weights but not training state")
+        parser.add_argument("--log_rate", type=int, default=16)
 
         # Training hyperparams
         parser.add_argument("--lr", type=float, default=1e-5)
@@ -365,8 +366,8 @@ def main(args):
         max_epochs=10000, min_epochs=0, max_steps=args.train_steps,  # run for many epochs, but stop after max_steps
         val_check_interval=args.val_every, limit_val_batches=args.val_batches,
         early_stop_callback=None,
-        row_log_interval=16,
-        progress_bar_refresh_rate=16,
+        row_log_interval=args.log_rate,
+        progress_bar_refresh_rate=args.log_rate,
         logger=logger,
         checkpoint_callback=checkpoint_callback,
         accumulate_grad_batches=args.grad_accum,
