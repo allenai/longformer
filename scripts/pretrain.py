@@ -28,9 +28,6 @@ logger = logging.getLogger(__name__)
 # TODO: try on a single TPU
 # - tie weights
 # - tensorboard
-# - getrank
-# - barrier
-# - checkpointing (broken)
 # - gradient accumulation
 # - set_epoch bug
 # - gradient clipping
