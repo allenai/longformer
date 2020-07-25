@@ -26,7 +26,6 @@ logger = logging.getLogger(__name__)
 # DONE: testing ddp multiple machines
 # DONE: testing resume from checkpoint
 # TODO: try on a single TPU
-# - tie weights
 # - set_epoch bug
 # - gradient clipping
 # - tensorboard: https://github.com/PyTorchLightning/pytorch-lightning/issues/2698
