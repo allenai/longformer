@@ -25,10 +25,7 @@ logger = logging.getLogger(__name__)
 # DONE: testing ddp single machine
 # DONE: testing ddp multiple machines
 # DONE: testing resume from checkpoint
-# TODO: try on a single TPU
-# - set_epoch bug
-# - gradient clipping
-# - tensorboard: https://github.com/PyTorchLightning/pytorch-lightning/issues/2698
+# TODO: check gradient clipping on a single TPU
 # TODO: try on a TPU-pod
 # TODO: run on beaker on ai2-server1/2
 
@@ -294,6 +291,7 @@ class Pretrainer(ptl.LightningModule):
         parser.add_argument("--resume_model_only", type=str, default=None,
                             help="Path to a checkpoint to load model weights but not training state")
         parser.add_argument("--log_rate", type=int, default=16)
+        parser.add_argument("--disable_checkpointing", type=bool, default=False)
 
         # Training hyperparams
         parser.add_argument("--lr", type=float, default=1e-5)
@@ -381,7 +379,7 @@ def main(args):
         row_log_interval=args.log_rate,
         progress_bar_refresh_rate=args.log_rate,
         logger=logger,
-        checkpoint_callback=checkpoint_callback,
+        checkpoint_callback=checkpoint_callback if not args.disable_checkpointing else None,
         accumulate_grad_batches=args.grad_accum,
         resume_from_checkpoint=args.resume,
         gradient_clip_val=args.grad_clip,
