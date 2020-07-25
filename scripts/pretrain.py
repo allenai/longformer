@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # DONE: testing ddp single machine
 # DONE: testing ddp multiple machines
 # DONE: testing resume from checkpoint
-# TODO: check gradient clipping on a single TPU
+# TODO: enable gradient norm logging on a single TPU
 # TODO: try on a TPU-pod
 # TODO: run on beaker on ai2-server1/2
 
@@ -261,7 +261,7 @@ class Pretrainer(ptl.LightningModule):
         # Override PTL `grad_norm` function to only return `total_grad_norm` instead norms of individual params
 
         if self.use_tpu:
-            return {}  # computing grad_norm one parameter at a time takes forever on TPU
+            return {}  # TODO: computing grad_norm one parameter at a time takes forever on TPU
 
         # TODO: grad_norm reporting needs to take fp16 loss scale into account
         all_norms = [float(p.grad.data.norm(float(norm_type))) for p in self.parameters() if p.grad is not None]
