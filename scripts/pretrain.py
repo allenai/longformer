@@ -30,7 +30,6 @@ logger = logging.getLogger(__name__)
 # - gradient clipping
 # - tensorboard: https://github.com/PyTorchLightning/pytorch-lightning/issues/2698
 # TODO: try on a TPU-pod
-# TODO: use AutoModelForMaskedLM and remove masked_lm_labels
 # TODO: run on beaker on ai2-server1/2
 
 
