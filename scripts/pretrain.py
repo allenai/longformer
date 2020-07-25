@@ -27,12 +27,12 @@ logger = logging.getLogger(__name__)
 # DONE: testing resume from checkpoint
 # TODO: try on a single TPU
 # - tie weights
-# - tensorboard
 # - gradient accumulation
 # - set_epoch bug
 # - gradient clipping
-# TODO: use AutoModelForMaskedLM and remove masked_lm_labels
+# - tensorboard: https://github.com/PyTorchLightning/pytorch-lightning/issues/2698
 # TODO: try on a TPU-pod
+# TODO: use AutoModelForMaskedLM and remove masked_lm_labels
 # TODO: run on beaker on ai2-server1/2
 
 
