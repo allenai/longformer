@@ -79,6 +79,7 @@ class MMapTextDataset(Dataset):
         os.mkdir(f'{args.input_dir}/cache/')
 
         # TODO: process each shared in a separate worker and save their output to files
+        # TODO: update the data generation to avoid the need for regeneration if the seqlen changes
 
         chunks_list = []
         for fname in tqdm(all_files):
@@ -353,7 +354,7 @@ def main(args):
         # model saved to filepath/prefix_....
         filepath=os.path.join(args.save_dir, args.save_prefix, 'checkpoint'),
         prefix='',
-        save_top_k=3,
+        save_top_k=1,
         save_last=True,
         verbose=True,
         monitor='val_loss',
