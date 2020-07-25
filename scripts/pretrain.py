@@ -8,7 +8,7 @@ import math
 from tqdm import tqdm
 import time
 import torch
-from transformers import AutoTokenizer, AutoModelWithLMHead
+from transformers import AutoTokenizer, AutoModelForMaskedLM
 from transformers import DataCollatorForLanguageModeling
 from transformers.optimization import AdamW, get_linear_schedule_with_warmup
 
@@ -28,10 +28,8 @@ logger = logging.getLogger(__name__)
 # TODO: try on a single TPU
 # - tie weights
 # - tensorboard
-# - gradient accumulation
 # - set_epoch bug
 # - gradient clipping
-# TODO: use AutoModelForMaskedLM and remove masked_lm_labels
 # TODO: try on a TPU-pod
 # TODO: run on beaker on ai2-server1/2
 
@@ -134,7 +132,7 @@ class Pretrainer(ptl.LightningModule):
         self.args = hparams
         self.hparams = self.args
 
-        self.model = AutoModelWithLMHead.from_pretrained(args.model)
+        self.model = AutoModelForMaskedLM.from_pretrained(args.model)
         self.config = self.model.config
         tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
         self.pad_token_id = tokenizer.pad_token_id
@@ -153,7 +151,7 @@ class Pretrainer(ptl.LightningModule):
         attention_mask = (input_ids != self.pad_token_id).int()
 
         # output is loss, prediction_scores, hidden_states
-        output = self.model(input_ids=input_ids, attention_mask=attention_mask, masked_lm_labels=labels)
+        output = self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
         return output[0]  # loss
 
     def training_step(self, batch, batch_nb):
