@@ -147,6 +147,17 @@ class Pretrainer(ptl.LightningModule):
         )
         self.start_time = 0
 
+    def to(self, *args, **kwargs):
+        param_count_before_to = len(list(self.parameters()))
+        super().to(*args, **kwargs)
+        if self.trainer.use_tpu:
+            # need to re-tie the weights after moving to XLA!
+            self.model.tie_weights()
+            if 'roberta' in self.args.model:
+                self.model.lm_head.bias = self.model.lm_head.decoder.bias
+        param_count_after_to = len(list(self.parameters()))
+        assert param_count_before_to == param_count_after_to
+
     def forward(self, input_ids=None, labels=None):
         # get the padding mask - 1 for NOT masked, 0 for MASKED/PAD
         attention_mask = (input_ids != self.pad_token_id).int()
