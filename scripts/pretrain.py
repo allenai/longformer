@@ -39,8 +39,9 @@ else:
 
 
 class MMapTextDataset(Dataset):
-    def __init__(self, mmap_filename, chunk_size):
-        self.num_instances = np.memmap(mmap_filename, mode='r', dtype=np.uint16).shape[0] // chunk_size
+    def __init__(self, mmap_filename, chunk_size, bos_token_id, eos_token_id):
+        # `chunk_size - 2` to reserve space for <s> and </s>
+        self.num_instances = np.memmap(mmap_filename, mode='r', dtype=np.uint16).shape[0] // (chunk_size - 2)
         # defer loading the token_ids memmap until after the first __getitem__ call.
         # when spawning new processes for ddp, there is a hard limit in python < 3.8 that
         # pickle files need to be < 4GB. By waiting until after the first __getitem__ we
@@ -48,18 +49,30 @@ class MMapTextDataset(Dataset):
         self.token_ids = None
         self._mmap_filename = mmap_filename
         self._chunk_size = chunk_size
+        self._bos_token_id = bos_token_id
+        self._eos_token_id = eos_token_id
 
     def __len__(self):
         return self.num_instances
 
     def __getitem__(self, i):
         if self.token_ids is None:
-            self.token_ids = np.memmap(self._mmap_filename, mode='r', dtype=np.uint16,
-                                       shape=(self.num_instances, self._chunk_size))
-        return torch.tensor(self.token_ids[i, :].astype(np.int32), dtype=torch.long)
+            self.token_ids = np.memmap(self._mmap_filename, mode='r', dtype=np.uint16)
+        from_index = i * (self._chunk_size - 2)
+        to_index = (i + 1) * (self._chunk_size - 2)
+        data = np.concatenate(([self._bos_token_id], self.token_ids[from_index:to_index], [self._eos_token_id]))
+        return torch.tensor(data, dtype=torch.long)
 
     @staticmethod
     def raw_text_to_mmap(args):
+        """This is the main preprocessing function. It processes all the text files in `args.input_dir` and
+        outputs two np.memmap files, one for training and one for validation with ratio `args.train_dev_split`.
+        Processing each input file involves tokenizing it, sharding it into shards of size `args.shard_size`,
+        then writing each shard as an np.memmap file. The stream of tokens in the memmap file represents documents
+        separated with `tokenizer.sep_token`. In `__getitem__`, the `tokenizer.bos_token` and `tokenizer.eos_token`
+        are added. The reason for not adding them at preprocessing time is to allow different sequence lengths
+        later on. Notice that this is the "FULL-SENTENCES" setting in the RoBERTa paper, Table2.
+        """
         tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, use_fast=True)
         assert len(tokenizer) < 65535  # will use uint16 to store token ids
         all_files = glob.glob(f'{args.input_dir}/*.txt')
@@ -68,56 +81,62 @@ class MMapTextDataset(Dataset):
             logger.info("Cache already exists. Remove the cache directory to regenerate")
             return
         os.mkdir(f'{args.input_dir}/cache/')
+        os.mkdir(f'{args.input_dir}/shards/')
 
-        # TODO: process each shared in a separate worker and save their output to files
-        # TODO: update the data generation to avoid the need for regeneration if the seqlen changes
+        # TODO: support continue after a crash
 
-        chunks_list = []
-        for fname in tqdm(all_files):
-            with open(fname, 'r') as fin:
-                current_chunk = [tokenizer.bos_token]
+        for full_fname in tqdm(all_files):  # TODO: process each input file in a separate worker
+            fname = full_fname.split('/')[-1]
+            with open(full_fname, 'r') as fin:
+
+                def _write_shard(data, idx):
+                    if len(data) == 0:
+                        return
+                    shared_filename = f'{args.input_dir}/shards/{fname}-{idx}.bin'
+                    logging.info(f'Writing {len(data)} tokens to shared {shared_filename}')
+                    fp = np.memmap(shared_filename, dtype=np.uint16, mode='w+', shape=len(data))
+                    fp[:] = data[:]
+                    del fp  # flush and close file
+                token_list = []
+                shard_num = 0
                 for line in tqdm(fin):
-                    if line.strip() == '':  # drop empty lines
+                    line = line.strip()
+                    if line == '':  # drop empty lines
                         continue
-                    tokens = tokenizer.tokenize(line)  # each line is one document
-                    # generate chunks of length args.seqlen. The last chunk will be padded.
-                    # padding last chunk is not great for longformer because many chunks will be mostly padding
-
-                    for token in tokens:
-                        if len(current_chunk) == args.seqlen - 1:  # chunk is full
-                            current_chunk.append(tokenizer.eos_token)
-                            chunks_list.append(current_chunk)
-                            current_chunk = [tokenizer.bos_token]
-                        current_chunk.append(token)
-                    if args.padded_chunks:
-                        # fill the rest of the seqlen with pad
-                        current_chunk.extend([tokenizer.pad_token] * (args.seqlen - len(current_chunk)))
-                        current_chunk[args.seqlen - 1] = tokenizer.eos_token
-                        chunks_list.append(current_chunk)
-                        current_chunk = [tokenizer.bos_token]
+                    tokens = tokenizer.encode(line, add_special_tokens=False)  # Special tokens are in `__getitem__`
+                    token_list.extend(tokens)
+                    if len(token_list) > args.shard_size:
+                        _write_shard(token_list, shard_num)
+                        token_list = []
+                        shard_num += 1
                     else:
-                        # one long doc with sep inbetween
-                        if len(current_chunk) < args.seqlen - 1:
-                            current_chunk.append(tokenizer.sep_token)
-        random.shuffle(chunks_list)
-        val_count = int(args.train_dev_split * len(chunks_list))
-        val_chunks = chunks_list[:val_count]
-        train_chunks = chunks_list[val_count:]
+                        token_list.append(tokenizer.sep_token_id)
+                _write_shard(token_list, shard_num)
 
-        def _tokenized_text_to_mmap(output_fname, chunks_list):
-            num_chunks = len(chunks_list)
-            all_token_ids = np.empty((num_chunks, args.seqlen), dtype=np.uint16)
-            for k, chunk in enumerate(tqdm(chunks_list)):
-                token_ids = tokenizer.convert_tokens_to_ids(chunk)
-                assert len(token_ids) == args.seqlen
-                all_token_ids[k, :] = [int(t) for t in token_ids]
-            fp = np.memmap(output_fname, dtype=np.uint16, mode='w+', shape=(num_chunks, args.seqlen))
-            fp[:, :] = all_token_ids[:, :]
-            fp.flush()
+        all_shards = glob.glob(f'{args.input_dir}/shards/*.bin')
+        random.shuffle(all_shards)  # shuffling based on shards not individual lines
+        val_shards_count = int(args.train_dev_split * len(all_shards))
+        val_shards = all_shards[:val_shards_count]
+        train_shards = all_shards[val_shards_count:]
+
+        def _combine_shards(output_fname, shards_list):
+            total_size = 0
+            for filename in shards_list:
+                total_size += np.memmap(filename, mode='r', dtype=np.uint16).shape[0] + 1
+            total_size -= 1
+            logging.info(f'Writing {total_size} tokens to {output_fname}')
+            all_token_ids = np.empty(total_size, dtype=np.uint16)
+            last_token_index = 0
+            for filename in tqdm(shards_list):
+                shared = np.memmap(filename, mode='r', dtype=np.uint16)
+                all_token_ids[last_token_index:last_token_index+len(shared)] = shared[:]
+                last_token_index += len(shared)
+            fp = np.memmap(output_fname, dtype=np.uint16, mode='w+', shape=total_size)
+            fp[:] = all_token_ids[:]
             del fp
 
-        _tokenized_text_to_mmap(f'{args.input_dir}/cache/train.bin', train_chunks)
-        _tokenized_text_to_mmap(f'{args.input_dir}/cache/val.bin', val_chunks)
+        _combine_shards(f'{args.input_dir}/cache/val.bin', val_shards)
+        _combine_shards(f'{args.input_dir}/cache/train.bin', train_shards)
 
 
 class Pretrainer(ptl.LightningModule):
@@ -132,6 +151,8 @@ class Pretrainer(ptl.LightningModule):
         self.config = self.model.config
         tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
         self.pad_token_id = tokenizer.pad_token_id
+        self.eos_token_id = tokenizer.eos_token_id
+        self.bos_token_id = tokenizer.bos_token_id
 
         logger.info(f'Creating dataset cache from dir {self.args.input_dir}. This could be slow the first time.')
         MMapTextDataset.raw_text_to_mmap(args)
@@ -222,7 +243,8 @@ class Pretrainer(ptl.LightningModule):
         return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
 
     def _get_loader(self, fname, is_train):
-        dataset = MMapTextDataset(fname, chunk_size=self.args.seqlen)
+        dataset = MMapTextDataset(fname, chunk_size=self.args.seqlen,
+                                  bos_token_id=self.bos_token_id, eos_token_id=self.eos_token_id)
 
         # TODO: consider `replace_sampler_ddp=True` and removing the following if statement
         if self.trainer.use_ddp:
@@ -277,7 +299,7 @@ class Pretrainer(ptl.LightningModule):
         # Dataset. Some of these params are only useful when generating the dataset cache
         parser.add_argument("--input_dir", type=str, default='/net/nfs.corp/s2-research/beltagy/longformer/data/')
         parser.add_argument("--train_dev_split", type=float, default=0.05)
-        parser.add_argument("--padded_chunks", type=bool, default=False)
+        parser.add_argument("--shard_size", type=int, default=2 * 1000 * 1000)
         parser.add_argument("--seqlen", type=int, default=512)
         parser.add_argument("--mlm_prob", type=float, default=0.15)
 
@@ -293,7 +315,7 @@ class Pretrainer(ptl.LightningModule):
                             help="Path to a checkpoint to load model weights and training state. It overwrites args")
         parser.add_argument("--resume_model_only", type=str, default=None,
                             help="Path to a checkpoint to load model weights but not training state")
-        parser.add_argument("--log_rate", type=int, default=16)
+        parser.add_argument("--log_rate", type=int, default=10)
         parser.add_argument("--disable_checkpointing", type=bool, default=False)
 
         # Training hyperparams
