@@ -259,13 +259,16 @@ class Pretrainer(ptl.LightningModule):
 
     def grad_norm(self, norm_type):
         # Override PTL `grad_norm` function to only return `total_grad_norm` instead norms of individual params
-
-        if self.use_tpu:
-            return {}  # TODO: computing grad_norm one parameter at a time takes forever on TPU
-
         # TODO: grad_norm reporting needs to take fp16 loss scale into account
-        all_norms = [float(p.grad.data.norm(float(norm_type))) for p in self.parameters() if p.grad is not None]
-        return {'total_grad_norm': float(torch.tensor(all_norms).norm(norm_type))}
+        parameters = [p for p in self.parameters() if p.grad is not None]
+        device = parameters[0].device
+        total_norm = torch.zeros([], device=device if parameters else None)
+        norm_type = float(norm_type)
+        for p in parameters:
+            param_norm = p.grad.data.pow(norm_type).sum()
+            total_norm.add_(param_norm)
+        total_norm = (total_norm ** (1.0 / norm_type))
+        return {'total_grad_norm': total_norm}
 
     @staticmethod
     def add_args(parser):
@@ -304,7 +307,7 @@ class Pretrainer(ptl.LightningModule):
         parser.add_argument("--grad_clip", type=float, default=0)  # TODO: test this with fp16. Likely not working
 
         # RoBERTa's tokens_per_step = 2^18 = 512(seqlen) x 1(gpu_count) x 32(batch_size) x 16(grad_accum)
-        parser.add_argument("--batch_size", type=int, default=8)
+        parser.add_argument("--batch_size", type=int, default=32)
         parser.add_argument("--grad_accum", type=int, default=1)
 
         # Compute resources
