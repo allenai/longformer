@@ -62,6 +62,67 @@ class MMapTextDataset(Dataset):
         data = np.concatenate(([self._bos_token_id], self.token_ids[from_index:to_index], [self._eos_token_id]))
         return torch.tensor(data, dtype=torch.long)
 
+    # ========================= preprocessing code ========================= #
+    @staticmethod
+    def _process_file(full_fname):
+        "Step 1: tokenize an input text file then save token ids into `np.memmap` shards of size `args.shard_size`"
+        fname = full_fname.split('/')[-1]
+        log_filename = f'{args.input_dir}/logs-{args.shard_size}/{fname}.log'
+        if os.path.isfile(log_filename):
+            logging.info(f'Skipping {full_fname} ...')
+            return  # log file already exists. Skip current file.
+
+        logging.info(f'Processing {full_fname} ...')
+        with open(full_fname, 'r') as fin:
+            token_list = []
+            shard_count = 0
+            tokens_count = 0
+
+            def _write_shard():
+                if len(token_list) == 0:
+                    return
+                if token_list[-1] != MMapTextDataset.tokenizer.sep_token_id:  # handle a rare case
+                    token_list.append(MMapTextDataset.tokenizer.sep_token_id)
+                shared_filename = f'{args.input_dir}/shards-{args.shard_size}/{fname}-{shard_count}.bin'
+                logging.info(f'Writing {len(token_list)} tokens to shared {shared_filename}')
+                fp = np.memmap(shared_filename, dtype=np.uint16, mode='w+', shape=len(token_list))
+                fp[:] = token_list[:]
+                del fp  # flush and close file
+            for line in tqdm(fin):
+                line = line.strip()
+                if line == '':  # drop empty lines
+                    continue
+                tokens = MMapTextDataset.tokenizer.encode(line, add_special_tokens=False)  # `__getitem__` adds special tokens
+                token_list.extend(tokens)
+                if len(token_list) > args.shard_size:
+                    _write_shard()
+                    tokens_count += len(token_list)
+                    token_list = []
+                    shard_count += 1
+                else:
+                    token_list.append(MMapTextDataset.tokenizer.sep_token_id)
+            _write_shard()
+            tokens_count += len(token_list)
+        with open(log_filename, 'w') as f:
+            f.write(f'Generated {tokens_count} tokens in {shard_count + 1} shards')
+
+    @staticmethod
+    def _combine_shards(output_fname, shards_list):
+        "Step 2: combining memmap shards into one `train.bin` or `val.bin` file"
+        total_size = 0
+        for filename in shards_list:
+            total_size += np.memmap(filename, mode='r', dtype=np.uint16).shape[0]
+        logging.info(f'Writing {total_size} tokens to {output_fname}')
+        all_token_ids = np.empty(total_size, dtype=np.uint16)
+        last_token_index = 0
+        for filename in tqdm(shards_list):
+            shared = np.memmap(filename, mode='r', dtype=np.uint16)
+            all_token_ids[last_token_index:last_token_index+len(shared)] = shared[:]
+            last_token_index += len(shared)
+        fp = np.memmap(output_fname, dtype=np.uint16, mode='w+', shape=total_size)
+        fp[:] = all_token_ids[:]
+        del fp
+
     @staticmethod
     def raw_text_to_mmap(args):
         """This is the main preprocessing function. It processes all the text files in `args.input_dir` and
@@ -72,8 +133,8 @@ class MMapTextDataset(Dataset):
         are added. The reason for not adding them at preprocessing time is to allow different sequence lengths
         later on. Notice that this is the "FULL-SENTENCES" setting in the RoBERTa paper, Table2.
         """
-        tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, use_fast=True)
-        assert len(tokenizer) < 65535  # will use uint16 to store token ids
+        MMapTextDataset.tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, use_fast=True)
+        assert len(MMapTextDataset.tokenizer) < 65535  # will use uint16 to store token ids
         all_files = glob.glob(f'{args.input_dir}/*.txt')
 
         if os.path.exists(f'{args.input_dir}/cache/train.bin') and os.path.exists(f'{args.input_dir}/cache/val.bin'):
@@ -84,80 +145,35 @@ class MMapTextDataset(Dataset):
         except FileExistsError:
             pass
         try:
-            os.mkdir(f'{args.input_dir}/shards/')
+            os.mkdir(f'{args.input_dir}/shards-{args.shard_size}/')
         except FileExistsError:
             pass
         try:
-            os.mkdir(f'{args.input_dir}/logs/')  # log progrss to be able to resume
+            os.mkdir(f'{args.input_dir}/logs-{args.shard_size}/')  # log progrss to be able to resume
         except FileExistsError:
             pass
 
-        for full_fname in tqdm(all_files):  # TODO: process each input file in a separate worker
-            fname = full_fname.split('/')[-1]
-            log_filename = f'{args.input_dir}/logs/{fname}.log'
-            if os.path.isfile(log_filename):
-                logging.info(f'Skipping {full_fname} ...')
-                continue  # log file already exists. Skip current file.
-            logging.info(f'Processing {full_fname} ...')
-            with open(full_fname, 'r') as fin:
-                token_list = []
-                shard_count = 0
-                tokens_count = 0
+        # STEP1: tokenizing and saving to shards
+        if args.num_preprocessing_workers > 1:
+            from multiprocessing.pool import Pool
+            with Pool(args.num_preprocessing_workers) as p:
+                list(tqdm(p.imap(MMapTextDataset._process_file, all_files), total=len(all_files)))
+        else:
+            [MMapTextDataset._process_file(f) for f in tqdm(all_files)]
 
-                def _write_shard():
-                    if len(token_list) == 0:
-                        return
-                    shared_filename = f'{args.input_dir}/shards/{fname}-{shard_count}.bin'
-                    logging.info(f'Writing {len(token_list)} tokens to shared {shared_filename}')
-                    fp = np.memmap(shared_filename, dtype=np.uint16, mode='w+', shape=len(token_list))
-                    fp[:] = token_list[:]
-                    del fp  # flush and close file
-                for line in tqdm(fin):
-                    line = line.strip()
-                    if line == '':  # drop empty lines
-                        continue
-                    tokens = tokenizer.encode(line, add_special_tokens=False)  # Special tokens are in `__getitem__`
-                    token_list.extend(tokens)
-                    if len(token_list) > args.shard_size:
-                        _write_shard()
-                        tokens_count += len(token_list)
-                        token_list = []
-                        shard_count += 1
-                    else:
-                        token_list.append(tokenizer.sep_token_id)
-                _write_shard()
-                tokens_count += len(token_list)
-            with open(log_filename, 'w') as f:
-                f.write(f'Generated {tokens_count} tokens in {shard_count + 1} shards')
-
-        all_shards = glob.glob(f'{args.input_dir}/shards/*.bin')
+        # STEP2: shuffling shards and combining them into train.bin and val.bin files
+        all_shards = glob.glob(f'{args.input_dir}/shards-{args.shard_size}/*.bin')
         random.shuffle(all_shards)  # shuffling based on shards not individual lines
         val_shards_count = int(args.train_dev_split * len(all_shards))
         val_shards = all_shards[:val_shards_count]
         train_shards = all_shards[val_shards_count:]
+        # TODO: if MMapTextDataset._combining_shards is very slow for large files, it can be skipped but we nned to
+        # update the dataset to read from multiple shards directly
+        MMapTextDataset._combine_shards(f'{args.input_dir}/cache/val.bin', val_shards)
+        MMapTextDataset._combine_shards(f'{args.input_dir}/cache/train.bin', train_shards)
 
-        # TODO: if _combining_shards is very slow for large files, it can be skipped then update
-        # the dataset to read from multiple shards directly
-        def _combine_shards(output_fname, shards_list):
-            total_size = 0
-            for filename in shards_list:
-                # The +1 accounts for additional SEP tokens between shards
-                total_size += np.memmap(filename, mode='r', dtype=np.uint16).shape[0] + 1
-                print(total_size, filename)
-            total_size -= 1  # account for an unnecessary SEP token at the every end
-            logging.info(f'Writing {total_size} tokens to {output_fname}')
-            all_token_ids = np.empty(total_size, dtype=np.uint16)
-            last_token_index = 0
-            for filename in tqdm(shards_list):
-                shared = np.memmap(filename, mode='r', dtype=np.uint16)
-                all_token_ids[last_token_index:last_token_index+len(shared)] = shared[:]
-                last_token_index += len(shared)
-            fp = np.memmap(output_fname, dtype=np.uint16, mode='w+', shape=total_size)
-            fp[:] = all_token_ids[:]
-            del fp
-
-        _combine_shards(f'{args.input_dir}/cache/val.bin', val_shards)
-        _combine_shards(f'{args.input_dir}/cache/train.bin', train_shards)
+        del MMapTextDataset.tokenizer
+    # ========================= end preprocessing code ========================= #
 
 
 class Pretrainer(ptl.LightningModule):
@@ -319,8 +335,11 @@ class Pretrainer(ptl.LightningModule):
 
         # Dataset. Some of these params are only useful when generating the dataset cache
         parser.add_argument("--input_dir", type=str, default='/net/nfs.corp/s2-research/beltagy/longformer/data/')
+        # Used only at the preprocessing phase
         parser.add_argument("--train_dev_split", type=float, default=0.05)
-        parser.add_argument("--shard_size", type=int, default=2 * 1000 * 1000)
+        parser.add_argument("--shard_size", type=int, default=1024 ** 3 // 4)  # 250MB
+        parser.add_argument("--num_preprocessing_workers", type=int, default=1)
+        # Used only at the training phase
         parser.add_argument("--seqlen", type=int, default=512)
         parser.add_argument("--mlm_prob", type=float, default=0.15)
 
