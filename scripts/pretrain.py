@@ -25,7 +25,6 @@ logger = logging.getLogger(__name__)
 # DONE: testing ddp single machine
 # DONE: testing ddp multiple machines
 # DONE: testing resume from checkpoint
-# TODO: enable gradient norm logging on a single TPU
 # TODO: try on a TPU-pod
 # TODO: run on beaker on ai2-server1/2
 
@@ -77,28 +76,42 @@ class MMapTextDataset(Dataset):
         assert len(tokenizer) < 65535  # will use uint16 to store token ids
         all_files = glob.glob(f'{args.input_dir}/*.txt')
 
-        if os.path.exists(f'{args.input_dir}/cache/'):
+        if os.path.exists(f'{args.input_dir}/cache/train.bin') and os.path.exists(f'{args.input_dir}/cache/val.bin'):
             logger.info("Cache already exists. Remove the cache directory to regenerate")
             return
-        os.mkdir(f'{args.input_dir}/cache/')
-        os.mkdir(f'{args.input_dir}/shards/')
-
-        # TODO: support continue after a crash
+        try:
+            os.mkdir(f'{args.input_dir}/cache/')
+        except FileExistsError:
+            pass
+        try:
+            os.mkdir(f'{args.input_dir}/shards/')
+        except FileExistsError:
+            pass
+        try:
+            os.mkdir(f'{args.input_dir}/logs/')  # log progrss to be able to resume
+        except FileExistsError:
+            pass
 
         for full_fname in tqdm(all_files):  # TODO: process each input file in a separate worker
             fname = full_fname.split('/')[-1]
+            log_filename = f'{args.input_dir}/logs/{fname}.log'
+            if os.path.isfile(log_filename):
+                logging.info(f'Skipping {full_fname} ...')
+                continue  # log file already exists. Skip current file.
+            logging.info(f'Processing {full_fname} ...')
             with open(full_fname, 'r') as fin:
-
-                def _write_shard(data, idx):
-                    if len(data) == 0:
-                        return
-                    shared_filename = f'{args.input_dir}/shards/{fname}-{idx}.bin'
-                    logging.info(f'Writing {len(data)} tokens to shared {shared_filename}')
-                    fp = np.memmap(shared_filename, dtype=np.uint16, mode='w+', shape=len(data))
-                    fp[:] = data[:]
-                    del fp  # flush and close file
                 token_list = []
-                shard_num = 0
+                shard_count = 0
+                tokens_count = 0
+
+                def _write_shard():
+                    if len(token_list) == 0:
+                        return
+                    shared_filename = f'{args.input_dir}/shards/{fname}-{shard_count}.bin'
+                    logging.info(f'Writing {len(token_list)} tokens to shared {shared_filename}')
+                    fp = np.memmap(shared_filename, dtype=np.uint16, mode='w+', shape=len(token_list))
+                    fp[:] = token_list[:]
+                    del fp  # flush and close file
                 for line in tqdm(fin):
                     line = line.strip()
                     if line == '':  # drop empty lines
@@ -106,12 +119,16 @@ class MMapTextDataset(Dataset):
                     tokens = tokenizer.encode(line, add_special_tokens=False)  # Special tokens are in `__getitem__`
                     token_list.extend(tokens)
                     if len(token_list) > args.shard_size:
-                        _write_shard(token_list, shard_num)
+                        _write_shard()
+                        tokens_count += len(token_list)
                         token_list = []
-                        shard_num += 1
+                        shard_count += 1
                     else:
                         token_list.append(tokenizer.sep_token_id)
-                _write_shard(token_list, shard_num)
+                _write_shard()
+                tokens_count += len(token_list)
+            with open(log_filename, 'w') as f:
+                f.write(f'Generated {tokens_count} tokens in {shard_count + 1} shards')
 
         all_shards = glob.glob(f'{args.input_dir}/shards/*.bin')
         random.shuffle(all_shards)  # shuffling based on shards not individual lines
@@ -119,11 +136,15 @@ class MMapTextDataset(Dataset):
         val_shards = all_shards[:val_shards_count]
         train_shards = all_shards[val_shards_count:]
 
+        # TODO: if _combining_shards is very slow for large files, it can be skipped then update
+        # the dataset to read from multiple shards directly
         def _combine_shards(output_fname, shards_list):
             total_size = 0
             for filename in shards_list:
+                # The +1 accounts for additional SEP tokens between shards
                 total_size += np.memmap(filename, mode='r', dtype=np.uint16).shape[0] + 1
-            total_size -= 1
+                print(total_size, filename)
+            total_size -= 1  # account for an unnecessary SEP token at the every end
             logging.info(f'Writing {total_size} tokens to {output_fname}')
             all_token_ids = np.empty(total_size, dtype=np.uint16)
             last_token_index = 0
