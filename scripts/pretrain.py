@@ -184,7 +184,13 @@ class Pretrainer(ptl.LightningModule):
         self.args = hparams
         self.hparams = self.args
 
-        self.model = AutoModelForMaskedLM.from_pretrained(args.model)
+        if 'longformer' in args.model and args.model.endswith('/'):  # local path on the disk
+            from longformer.longformer import LongformerForMaskedLM, LongformerConfig
+            self.config = LongformerConfig.from_pretrained(args.model)
+            self.config.attention_mode = 'sliding_chunks'
+            self.model = LongformerForMaskedLM.from_pretrained(args.model, config=self.config)
+        else:
+            self.model = AutoModelForMaskedLM.from_pretrained(args.model)
         self.config = self.model.config
         tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
         self.pad_token_id = tokenizer.pad_token_id
@@ -206,7 +212,7 @@ class Pretrainer(ptl.LightningModule):
         if self.trainer.use_tpu:
             # need to re-tie the weights after moving to XLA!
             self.model.tie_weights()
-            if 'roberta' in self.args.model:
+            if 'roberta' in self.args.model or 'longformer' in self.args.model:
                 self.model.lm_head.bias = self.model.lm_head.decoder.bias
         param_count_after_to = len(list(self.parameters()))
         assert param_count_before_to == param_count_after_to
