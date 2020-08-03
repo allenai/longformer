@@ -348,7 +348,7 @@ class Pretrainer(ptl.LightningModule):
         parser.add_argument("--model", type=str, default='roberta-base')
 
         # Checkpointing and logging
-        parser.add_argument("--save_dir", type=str, default='runs/')
+        parser.add_argument("--save_dir", type=str, default='/runs/')
         parser.add_argument("--save_prefix", type=str, default='test',
                             help="path of output directory is --save_dir/--save_prefix")
         parser.add_argument("--resume", type=str, default=None,  # It is better to use a different output dir.
