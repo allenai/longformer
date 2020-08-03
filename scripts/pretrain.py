@@ -233,7 +233,7 @@ class Pretrainer(ptl.LightningModule):
             elapsed_time = time.time() - self.start_time
             tensorboard_logs['second_per_batch'] = elapsed_time
         self.start_time = time.time()
-        if not self.use_tpu:
+        if self.on_gpu:
             tensorboard_logs['memory'] = torch.cuda.memory_allocated(loss.device) / 1024 ** 3
 
         return {'loss': loss, 'log': tensorboard_logs}
