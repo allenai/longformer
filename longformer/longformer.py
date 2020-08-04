@@ -7,6 +7,13 @@ from longformer.diagonaled_mm_tvm import diagonaled_mm as diagonaled_mm_tvm, mas
 from longformer.sliding_chunks import sliding_chunks_matmul_qk, sliding_chunks_matmul_pv
 from transformers.modeling_roberta import RobertaConfig, RobertaModel, RobertaForMaskedLM
 
+try:
+    import torch_xla.core.xla_model as xm
+except ImportError:
+    XLA_AVAILABLE = False
+else:
+    XLA_AVAILABLE = True
+
 
 class Longformer(RobertaModel):
     def __init__(self, config):
@@ -103,6 +110,9 @@ class LongformerSelfAttention(nn.Module):
         assert encoder_hidden_states is None, "`encoder_hidden_states` is not supported and should be None"
         assert encoder_attention_mask is None, "`encoder_attention_mask` is not supported and shiould be None"
 
+        if XLA_AVAILABLE:
+            attention_mask = None  # disable global attention and masking for TPUs
+
         if attention_mask is not None:
             attention_mask = attention_mask.squeeze(dim=2).squeeze(dim=1)
             key_padding_mask = attention_mask < 0
@@ -147,9 +157,9 @@ class LongformerSelfAttention(nn.Module):
             q = q.float().contiguous()
             k = k.float().contiguous()
             attn_weights = diagonaled_mm_tvm(q, k, self.attention_window, self.attention_dilation, False, 0, False)
+            mask_invalid_locations(attn_weights, self.attention_window, self.attention_dilation, False)
         else:  # "sliding_chunks"
             attn_weights = sliding_chunks_matmul_qk(q, k, self.attention_window, padding_value=0)
-        mask_invalid_locations(attn_weights, self.attention_window, self.attention_dilation, False)
         if remove_from_windowed_attention_mask is not None:
             # This implementation is fast and takes very little memory because num_heads x hidden_size = 1
             # from (bsz x seq_len) to (bsz x seq_len x num_heads x hidden_size)

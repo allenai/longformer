@@ -40,5 +40,5 @@ class CoolSystem(pl.LightningModule):
 
 if __name__ == '__main__':
     model = CoolSystem()
-    trainer = pl.Trainer(num_tpu_cores=8, progress_bar_refresh_rate=1, max_epochs=10, num_sanity_val_steps=0, gpus=0)
+    trainer = pl.Trainer(num_tpu_cores=8, progress_bar_refresh_rate=10, max_epochs=10, num_sanity_val_steps=0, gpus=0)
     trainer.fit(model)

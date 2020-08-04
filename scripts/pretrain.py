@@ -230,11 +230,14 @@ class Pretrainer(ptl.LightningModule):
         input_ids = batch['input_ids']
         tensorboard_logs = {
             'input_size': input_ids.numel(),
-            'mlm_loss': loss,
-            'mlm_bpc': loss/math.log(2),
-            'mlm_perplexity': torch.exp(loss),
             'token_per_step': input_ids.numel() * self.args.grad_accum * self.trainer.world_size,
         }
+        if not self.use_tpu:
+            # logging additional losses is slow on tpu
+            tensorboard_logs['mlm_loss'] =  loss
+            tensorboard_logs['mlm_bpc'] = loss/math.log(2)
+            tensorboard_logs['mlm_perplexity'] = torch.exp(loss)
+
         if self.start_time != 0:
             elapsed_time = time.time() - self.start_time
             tensorboard_logs['second_per_batch'] = elapsed_time
@@ -443,7 +446,7 @@ def main(args):
         num_tpu_cores=args.tpu_core_count,
         distributed_backend='ddp' if (args.gpu_count > 1 or args.node_count > 1) else None,
         replace_sampler_ddp=False,
-        track_grad_norm=2,
+        track_grad_norm=2 if args.tpu_core_count is None else -1,  # gradnorm logging is slow on tpus
         max_epochs=10000, min_epochs=0, max_steps=args.train_steps,  # run for many epochs, but stop after max_steps
         val_check_interval=args.val_every, limit_val_batches=args.val_batches,
         early_stop_callback=None,

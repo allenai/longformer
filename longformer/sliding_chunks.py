@@ -2,6 +2,20 @@ import torch
 import torch.nn.functional as F
 from longformer.diagonaled_mm_tvm import mask_invalid_locations
 
+try:
+    import torch_xla.core.xla_model as xm
+except ImportError:
+    XLA_AVAILABLE = False
+else:
+    XLA_AVAILABLE = True
+
+
+def _unfold_loop(x, size, step):
+    seqlen = x.size(1)
+    num_chunks = (seqlen - size) // step + 1
+    chunks = [x.narrow(1, i * step, size) for i in range(num_chunks)]
+    return torch.stack(chunks, dim=1)
+
 
 def _skew(x, direction, padding_value):
     '''Convert diagonals into columns (or columns into diagonals depending on `direction`'''
@@ -51,8 +65,12 @@ def sliding_chunks_matmul_qk(q: torch.Tensor, k: torch.Tensor, w: int, padding_v
     q = q.transpose(1, 2).reshape(bsz * num_heads, seqlen, head_dim)
     k = k.transpose(1, 2).reshape(bsz * num_heads, seqlen, head_dim)
 
-    chunk_q = _chunk(q, w)
-    chunk_k = _chunk(k, w)
+    if XLA_AVAILABLE:
+        chunk_q = _unfold_loop(q, 2 * w, w)
+        chunk_k = _unfold_loop(k, 2 * w, w)
+    else:
+        chunk_q = _chunk(q, w)
+        chunk_k = _chunk(k, w)
 
     # matrix multipication
     # bcxd: bsz*num_heads x chunks x 2w x head_dim
@@ -103,10 +121,13 @@ def sliding_chunks_matmul_pv(prob: torch.Tensor, v: torch.Tensor, w: int):
     padded_v = F.pad(v, (0, 0, w, w), value=-1)
 
     # chunk padded_v into chunks of size 3w and an overlap of size w
-    chunk_v_size = (bsz * num_heads, chunks_count + 1, 3 * w, head_dim)
-    chunk_v_stride = padded_v.stride()
-    chunk_v_stride = chunk_v_stride[0], w * chunk_v_stride[1], chunk_v_stride[1], chunk_v_stride[2]
-    chunk_v = padded_v.as_strided(size=chunk_v_size, stride=chunk_v_stride)
+    if XLA_AVAILABLE:
+        chunk_v = _unfold_loop(padded_v, 3 * w, w)
+    else:
+        chunk_v_size = (bsz * num_heads, chunks_count + 1, 3 * w, head_dim)
+        chunk_v_stride = padded_v.stride()
+        chunk_v_stride = chunk_v_stride[0], w * chunk_v_stride[1], chunk_v_stride[1], chunk_v_stride[2]
+        chunk_v = padded_v.as_strided(size=chunk_v_size, stride=chunk_v_stride)
 
     skewed_prob = _skew2(chunk_prob, padding_value=0)
 

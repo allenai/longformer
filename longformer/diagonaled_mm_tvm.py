@@ -316,11 +316,11 @@ def mask_invalid_locations(input_tensor: torch.Tensor, w: int, d: Union[torch.Te
     affected_seq_len, beginning_mask, ending_mask = _get_invalid_locations_mask(w, d, autoregressive, input_tensor.device)
     seq_len = input_tensor.size(1)
     beginning_input = input_tensor[:, :affected_seq_len, :, :w+1]
-    beginning_mask = beginning_mask[:, :seq_len].expand(beginning_input.size())
+    beginning_mask = beginning_mask.expand(beginning_input.size())
     beginning_input.masked_fill_(beginning_mask, -float('inf'))
     if not autoregressive:
         ending_input = input_tensor[:, -affected_seq_len:, :, -(w+1):]
-        ending_mask = ending_mask[:, -seq_len:].expand(ending_input.size())
+        ending_mask = ending_mask.expand(ending_input.size())
         ending_input.masked_fill_(ending_mask, -float('inf'))
 
 
