@@ -7,10 +7,13 @@ import pytorch_lightning as pl
 class CoolDataset(Dataset):
 
     def __len__(self):
-        return 100
+        return 1000
 
     def __getitem__(self, idx):
-        return torch.tensor([1, 2, 3, 4] * 128 * 8), torch.tensor([1, 1, 1, 1] * 128 * 8)
+        data = torch.tensor([1, 2, 3, 4] * 128 * 16)
+        mask = torch.tensor([1, 1, 1, 1] * 128 * 16)
+        # mask[:100] = 2
+        return data, mask
 
 
 class CoolSystem(pl.LightningModule):
@@ -20,15 +23,23 @@ class CoolSystem(pl.LightningModule):
         from longformer.longformer import LongformerForMaskedLM, LongformerConfig
         self.config = LongformerConfig.from_pretrained('allenai/longformer-base-4096')
         self.config.attention_mode = 'sliding_chunks'
-        self.config.num_hidden_layers = 1
+        # self.config.num_hidden_layers = 1
         self.config.attention_dilation = [1] * self.config.num_hidden_layers
         self.config.attention_window = [256] * self.config.num_hidden_layers
         self.model = LongformerForMaskedLM(config=self.config)
         # self.model = AutoModel.from_pretrained('allenai/longformer-base-4096')
         # self.model = AutoModel.from_pretrained('roberta-base')
 
+    def to(self, *args, **kwargs):
+        param_count_before_moving_to_device = len(list(self.parameters()))
+        super().to(*args, **kwargs)
+        self.model.tie_weights()  # a new function that the user needs to implement
+        param_count_after_moving_to_device = len(list(self.parameters()))
+        print('==========', param_count_before_moving_to_device, param_count_after_moving_to_device)
+
     def forward(self, x, y):
-        return self.model(x, attention_mask=None)
+        # print(x.shape, self.model.roberta.encoder.layer[23].attention.self.attention_window)
+        return self.model(x, attention_mask=y)
 
     def training_step(self, batch, batch_idx):
         x, y = batch
