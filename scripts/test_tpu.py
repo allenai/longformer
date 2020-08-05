@@ -7,7 +7,7 @@ import pytorch_lightning as pl
 class CoolDataset(Dataset):
 
     def __len__(self):
-        return 128 * 128
+        return 100
 
     def __getitem__(self, idx):
         return torch.tensor([1, 2, 3, 4] * 128 * 8), torch.tensor([1, 1, 1, 1] * 128 * 8)
@@ -20,8 +20,9 @@ class CoolSystem(pl.LightningModule):
         from longformer.longformer import LongformerForMaskedLM, LongformerConfig
         self.config = LongformerConfig.from_pretrained('allenai/longformer-base-4096')
         self.config.attention_mode = 'sliding_chunks'
+        self.config.num_hidden_layers = 1
         self.config.attention_dilation = [1] * self.config.num_hidden_layers
-        self.config.attention_window = [w // 2 for w in self.config.attention_window]
+        self.config.attention_window = [256] * self.config.num_hidden_layers
         self.model = LongformerForMaskedLM(config=self.config)
         # self.model = AutoModel.from_pretrained('allenai/longformer-base-4096')
         # self.model = AutoModel.from_pretrained('roberta-base')
@@ -45,5 +46,5 @@ class CoolSystem(pl.LightningModule):
 
 if __name__ == '__main__':
     model = CoolSystem()
-    trainer = pl.Trainer(num_tpu_cores=8, progress_bar_refresh_rate=10, max_epochs=10, num_sanity_val_steps=0, gpus=0)
+    trainer = pl.Trainer(num_tpu_cores=1, progress_bar_refresh_rate=10, max_epochs=10, num_sanity_val_steps=0, gpus=0, checkpoint_callback=None)
     trainer.fit(model)
