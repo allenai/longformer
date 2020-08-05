@@ -128,10 +128,18 @@ class MMapTextDataset(Dataset):
         """This is the main preprocessing function. It processes all the text files in `args.input_dir` and
         outputs two np.memmap files, one for training and one for validation with ratio `args.train_dev_split`.
         Processing each input file involves tokenizing it, sharding it into shards of size `args.shard_size`,
-        then writing each shard as an np.memmap file. The stream of tokens in the memmap file represents documents
-        separated with `tokenizer.sep_token`. In `__getitem__`, the `tokenizer.bos_token` and `tokenizer.eos_token`
+        then writing each shard as an np.memmap file, shuffle the shards, split them into train and dev shards,
+        then combine the shards of each set into one big file (train.bin and val.bin).
+        Notice that only the shards are shuffled not the instances inside each shard. Therefor, it is important
+        to use `args.shard_size` that's small enough to have a good train/dev split, but also not small enough
+        to end up with a huge number of shards that might be difficult to work with.
+        The stream of tokens in the memmap files represents documents separated with `tokenizer.sep_token`.
+        In `__getitem__`, the `tokenizer.bos_token` and `tokenizer.eos_token`
         are added. The reason for not adding them at preprocessing time is to allow different sequence lengths
         later on. Notice that this is the "FULL-SENTENCES" setting in the RoBERTa paper, Table2.
+        Example running the preprocessing:
+            >>> python scripts/pretrain.py --input_dir dirWithTextFiles --train_dev_split 0.05  \
+                                           --shard_size  268435456  --num_preprocessing_workers 16
         """
         MMapTextDataset.tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, use_fast=True)
         assert len(MMapTextDataset.tokenizer) < 65535  # will use uint16 to store token ids
