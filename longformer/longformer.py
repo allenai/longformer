@@ -55,7 +55,6 @@ class LongformerConfig(RobertaConfig):
         self.attention_dilation = attention_dilation
         self.autoregressive = autoregressive
         self.attention_mode = attention_mode
-        assert self.attention_mode in ['tvm', 'sliding_chunks', 'n2']
 
 
 class LongformerSelfAttention(nn.Module):

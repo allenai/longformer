@@ -17,8 +17,13 @@ class CoolSystem(pl.LightningModule):
 
     def __init__(self):
         super().__init__()
-
-        self.model = AutoModel.from_pretrained('allenai/longformer-base-4096')
+        from longformer.longformer import LongformerForMaskedLM, LongformerConfig
+        self.config = LongformerConfig.from_pretrained('allenai/longformer-base-4096')
+        self.config.attention_mode = 'sliding_chunks'
+        self.config.attention_dilation = [1] * self.config.num_hidden_layers
+        self.config.attention_window = [w // 2 for w in self.config.attention_window]
+        self.model = LongformerForMaskedLM(config=self.config)
+        # self.model = AutoModel.from_pretrained('allenai/longformer-base-4096')
         # self.model = AutoModel.from_pretrained('roberta-base')
 
     def forward(self, x, y):
