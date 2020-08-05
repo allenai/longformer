@@ -208,7 +208,7 @@ class Pretrainer(ptl.LightningModule):
         logger.info(f'Creating dataset cache from dir {self.args.input_dir}. This could be slow the first time.')
         MMapTextDataset.raw_text_to_mmap(args)
 
-        # TODO: add support for other objective functions (whole word masking, BART objectives)
+        # TODO: add support for other objective functions (whole word masking, BART, Pegasus)
         self.data_collator = DataCollatorForLanguageModeling(
             tokenizer=tokenizer, mlm=True, mlm_probability=self.args.mlm_prob
         )
