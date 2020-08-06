@@ -10,11 +10,13 @@ else:
     XLA_AVAILABLE = True
 
 
-def _unfold_loop(x, size, step):
-    seqlen = x.size(1)
-    num_chunks = (seqlen - size) // step + 1
-    chunks = [x.narrow(1, i * step, size) for i in range(num_chunks)]
-    return torch.stack(chunks, dim=1)
+def _unfold_conv(base, size, step):
+    d0, d1, d2 = base.shape
+    reshape_base = base.reshape([d0,d1//step, step,d2])
+    transpose_base = reshape_base.permute(3, 2, 0 ,1)
+    filter = torch.eye(size, device=xm.xla_device()).view([1,size//step,step,size]).permute(3,2,0,1)
+    res = torch.nn.functional.conv2d(transpose_base, filter)
+    return res.permute(2,3,1,0)
 
 
 def _skew(x, direction, padding_value):
@@ -66,8 +68,8 @@ def sliding_chunks_matmul_qk(q: torch.Tensor, k: torch.Tensor, w: int, padding_v
     k = k.transpose(1, 2).reshape(bsz * num_heads, seqlen, head_dim)
 
     if XLA_AVAILABLE:
-        chunk_q = _unfold_loop(q, 2 * w, w)
-        chunk_k = _unfold_loop(k, 2 * w, w)
+        chunk_q = _unfold_conv(q, 2 * w, w)
+        chunk_k = _unfold_conv(k, 2 * w, w)
     else:
         chunk_q = _chunk(q, w)
         chunk_k = _chunk(k, w)
@@ -122,7 +124,7 @@ def sliding_chunks_matmul_pv(prob: torch.Tensor, v: torch.Tensor, w: int):
 
     # chunk padded_v into chunks of size 3w and an overlap of size w
     if XLA_AVAILABLE:
-        chunk_v = _unfold_loop(padded_v, 3 * w, w)
+        chunk_v = _unfold_conv(padded_v, 3 * w, w)
     else:
         chunk_v_size = (bsz * num_heads, chunks_count + 1, 3 * w, head_dim)
         chunk_v_stride = padded_v.stride()
