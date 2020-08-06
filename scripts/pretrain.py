@@ -27,6 +27,9 @@ logger = logging.getLogger(__name__)
 # DONE: testing resume from checkpoint
 # TODO: try on a TPU-pod
 # TODO: run on beaker on ai2-server1/2
+# TODO: optimize longformer for TPUs
+# TODO: verify that global attention is correct
+# TODO: implement non-contiguous global attention
 
 
 try:
@@ -197,6 +200,8 @@ class Pretrainer(ptl.LightningModule):
             self.config = LongformerConfig.from_pretrained(args.model)
             self.config.attention_mode = 'sliding_chunks'
             self.model = LongformerForMaskedLM.from_pretrained(args.model, config=self.config)
+            for i, layer in enumerate(self.model.roberta.encoder.layer):
+                layer.attention.self.global_tokens = 0
         else:
             self.model = AutoModelForMaskedLM.from_pretrained(args.model)
         self.config = self.model.config

@@ -74,6 +74,9 @@ python -m scripts.triviaqa_utils.evaluation_utils  \
 
 # TPU
 import torch_xla.debug.metrics as met; print(met.metrics_report())
+
+import torch_xla.debug.metrics as met; print("\n".join([x for x in met.metrics_report().split('\n') if 'aten:' in x]))
+
 curl -X POST http://10.125.212.42:8475/requestversion/pytorch-dev20200722
 
 /usr/share/torch-xla-nightly/pytorch/xla/scripts/debug_run.py --outfile debug.tar.gz -- python -u scripts/test_tpu.py

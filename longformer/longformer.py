@@ -82,6 +82,8 @@ class LongformerSelfAttention(nn.Module):
         self.layer_id = layer_id
         self.attention_window = config.attention_window[self.layer_id]
         self.attention_dilation = config.attention_dilation[self.layer_id]
+        self.global_tokens = 0  # number of global attention tokens at the beginning of the sequence
+        self.use_global_proj = False  # use new qkv projections for global attention
         self.attention_mode = config.attention_mode
         self.autoregressive = config.autoregressive
         assert self.attention_window > 0
@@ -111,6 +113,9 @@ class LongformerSelfAttention(nn.Module):
 
         if XLA_AVAILABLE:
             attention_mask = None  # disable global attention and masking for TPUs
+
+        if getattr(self, 'global_tokens', 0) > 0:  # global tokens at the beginning of the sequence
+            assert attention_mask is None  # no attention_mask is provided (no padding, no global attention selected tokens)
 
         if attention_mask is not None:
             attention_mask = attention_mask.squeeze(dim=2).squeeze(dim=1)
@@ -158,7 +163,9 @@ class LongformerSelfAttention(nn.Module):
             attn_weights = diagonaled_mm_tvm(q, k, self.attention_window, self.attention_dilation, False, 0, False)
             mask_invalid_locations(attn_weights, self.attention_window, self.attention_dilation, False)
         else:  # "sliding_chunks"
+            # attn_weights = torch.einsum('blhd,bshd->blhs', (q, k))  # For testing
             attn_weights = sliding_chunks_matmul_qk(q, k, self.attention_window, padding_value=0)
+
         if remove_from_windowed_attention_mask is not None:
             # This implementation is fast and takes very little memory because num_heads x hidden_size = 1
             # from (bsz x seq_len) to (bsz x seq_len x num_heads x hidden_size)
@@ -186,6 +193,10 @@ class LongformerSelfAttention(nn.Module):
             # concat to attn_weights
             # (bsz, seq_len, num_heads, extra attention count + 2*window+1)
             attn_weights = torch.cat((selected_attn_weights, attn_weights), dim=-1)
+        if getattr(self, 'global_tokens', 0) > 0:
+            # (bsz, seq_len, num_heads, max_num_extra_indices_per_batch)
+            selected_attn_weights = torch.einsum('blhd,bshd->blhs', (q, k[:, :self.global_tokens]))
+            attn_weights = torch.cat((selected_attn_weights, attn_weights), dim=-1)
 
         attn_weights_float = F.softmax(attn_weights, dim=-1, dtype=torch.float32)  # use fp32 for numerical stability
         if key_padding_mask is not None:
@@ -204,11 +215,18 @@ class LongformerSelfAttention(nn.Module):
             # attn = torch.einsum('blhs,bshd->blhd', (selected_attn_probs, selected_v))
             attn = torch.matmul(selected_attn_probs.transpose(1, 2), selected_v.transpose(1, 2).type_as(selected_attn_probs)).transpose(1, 2)
             attn_probs = attn_probs.narrow(-1, max_num_extra_indices_per_batch, attn_probs.size(-1) - max_num_extra_indices_per_batch).contiguous()
+        if getattr(self, 'global_tokens', 0) > 0:
+            selected_attn_probs = attn_probs.narrow(-1, 0, self.global_tokens)
+            selected_v = v[:, :self.global_tokens]
+            attn = torch.matmul(selected_attn_probs.transpose(1, 2), selected_v.transpose(1, 2).type_as(selected_attn_probs)).transpose(1, 2)
+            attn_probs = attn_probs.narrow(-1, self.global_tokens, attn_probs.size(-1) - self.global_tokens).contiguous()
 
         if self.attention_mode == 'tvm':
             v = v.float().contiguous()
             attn += diagonaled_mm_tvm(attn_probs, v, self.attention_window, self.attention_dilation, True, 0, False)
         else:  # "sliding_chunks"
+            # attn += torch.einsum('blhs,bshd->blhd', (attn_probs, v))  # For testing
+            # attn += torch.matmul(attn_probs.transpose(1, 2), v.transpose(1, 2)).transpose(1, 2)  # For testing
             attn += sliding_chunks_matmul_pv(attn_probs, v, self.attention_window)
 
         attn = attn.type_as(hidden_states)
@@ -248,6 +266,14 @@ class LongformerSelfAttention(nn.Module):
             selected_attn_4d = selected_attn.view(bsz, self.num_heads, max_num_extra_indices_per_batch, self.head_dim)
             nonzero_selected_attn = selected_attn_4d[selection_padding_mask_nonzeros[0], :, selection_padding_mask_nonzeros[1]]
             attn[extra_attention_mask_nonzeros[::-1]] = nonzero_selected_attn.view(len(selection_padding_mask_nonzeros[0]), -1).type_as(hidden_states)
+
+        if getattr(self, 'global_tokens', 0) > 0:
+            assert not self.use_global_proj  # TODO: support the use of global projections
+            attn_weights = torch.einsum('blhd,bshd->blhs', (q[:, :self.global_tokens], k))
+            attn_weights_float = F.softmax(attn_weights, dim=-1, dtype=torch.float32)  # use fp32 for numerical stability
+            attn_probs = F.dropout(attn_weights_float.type_as(attn_weights), p=self.dropout, training=self.training)
+            selected_attn = torch.matmul(attn_probs.transpose(1, 2), v.transpose(1, 2))
+            attn[:self.global_tokens] = selected_attn.permute(2, 0, 1, 3).view(self.global_tokens, bsz, -1)
 
         context_layer = attn.transpose(0, 1)
         if output_attentions:
