@@ -62,10 +62,8 @@ class LongformerSelfAttentionForBart(nn.Module):
         assert list(query.size()) == [tgt_len, bsz, embed_dim]
         assert attn_mask is None
 
-        # LongformerSelfAttention expects this shape
-        query = query.view(bsz, tgt_len, embed_dim)
         outputs = self.longformer_self_attn(
-            query,
+            query.transpose(0, 1),  # LongformerSelfAttention expects (bsz, seqlen, embd_dim)
             attention_mask=key_padding_mask.unsqueeze(dim=1).unsqueeze(dim=1) * -1,
             head_mask=None,
             encoder_hidden_states=None,
