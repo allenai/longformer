@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader, Dataset
 from pytorch_lightning import Trainer
 import pytorch_lightning as pl
 
-seqlen = 1024 * 8
+seqlen = 1024 * 2
 global_size = seqlen // 100
 attention_window = 256  # one sided
 
@@ -31,16 +31,16 @@ class MemoryProfiler(pl.LightningModule):
         super().__init__()
         self.hparams = hparams
 
-        # config = LongformerEncoderDecoderConfig.from_pretrained('bart-long-4096')
-        config = LongformerConfig.from_pretrained('roberta-large')
+        config = LongformerEncoderDecoderConfig.from_pretrained('bart-long-4096')
+        # config = LongformerConfig.from_pretrained('roberta-large')
         config.max_position_embeddings = seqlen + 2
         config.gradient_checkpointing = True
-        # config.attention_mode = 'sliding_chunks'
-        config.attention_mode = 'n2'
+        config.attention_mode = 'sliding_chunks'
+        # config.attention_mode = 'n2'
         config.attention_window = [attention_window] * config.num_hidden_layers
         config.attention_dilation = [1] * config.num_hidden_layers
-        # self.model = LongformerEncoderDecoderForConditionalGeneration(config)
-        self.model = LongformerForMaskedLM(config)
+        self.model = LongformerEncoderDecoderForConditionalGeneration(config)
+        # self.model = LongformerForMaskedLM(config)
 
     def forward(self, x, y):
         print(seqlen, global_size, attention_window, torch.cuda.max_memory_allocated(x.device) / 1024 ** 3)
@@ -60,7 +60,7 @@ class MemoryProfiler(pl.LightningModule):
         return torch.optim.Adam(self.parameters(), lr=0.001)
 
     def train_dataloader(self):
-        return DataLoader(CoolDataset(), batch_size=1, num_workers=0)
+        return DataLoader(CoolDataset(), batch_size=2, num_workers=0)
 
 
 if __name__ == '__main__':
