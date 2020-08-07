@@ -71,8 +71,6 @@ class LongformerSelfAttentionForBart(nn.Module):
             output_attentions=output_attentions,
         )
 
-        attn_output = outputs[0]
-        attn_output = attn_output.contiguous().view(tgt_len, bsz, embed_dim)
-        attn_output = self.output(attn_output)
+        attn_output = self.output(outputs[0].transpose(0, 1))
 
         return (attn_output,) + outputs[1:] if len(outputs) == 2 else (attn_output, None)
