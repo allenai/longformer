@@ -53,6 +53,31 @@ def _chunk(x, w):
     return x.as_strided(size=chunk_size, stride=chunk_stride)
 
 
+def sliding_chunks_matmul_qk_2(q: torch.Tensor, k: torch.Tensor, w: int, padding_value: float):
+    bsz, seqlen, num_heads, head_dim = q.size()
+    assert seqlen % w == 0
+    assert q.size() == k.size()
+    # chunk seqlen into non-overlapping chunks of size w
+    chunk_q = q.view(bsz, seqlen // w, w, num_heads, head_dim)
+    chunk_k = k.view(bsz, seqlen // w, w, num_heads, head_dim)
+
+    chunk_attn_main_diagonal = torch.einsum('bcxhd,bcyhd->bcxhy', (chunk_q, chunk_k))  # multiply
+
+    chunk_attn_upper_diagonal = torch.einsum('bcxhd,bcyhd->bcxhy', (chunk_q.roll(shifts=1, dims=1), chunk_k))
+    chunk_attn_upper_diagonal[:, 0] = -float('inf')
+    chunk_attn_upper_diagonal = chunk_attn_upper_diagonal.roll(shifts=-1, dims=1)
+    upper_diagonal_mask = q.new_ones((w, w)).tril()[None, None, :, None].bool()
+    chunk_attn_upper_diagonal.masked_fill_(~upper_diagonal_mask, -float('inf'))
+
+    chunk_attn_lower_diagonal = torch.einsum('bcxhd,bcyhd->bcxhy', (chunk_q, chunk_k.roll(shifts=1, dims=1)))
+    chunk_attn_lower_diagonal[:, 0] = -float('inf')
+    lower_diagonal_mask = q.new_ones((w, w)).triu()[None, None, :, None].bool()
+    chunk_attn_lower_diagonal.masked_fill_(~lower_diagonal_mask, -float('inf'))
+
+    diagonal_attn = torch.cat((chunk_attn_lower_diagonal, chunk_attn_main_diagonal, chunk_attn_upper_diagonal), -1)
+    return diagonal_attn.view(bsz, seqlen, num_heads, 3 * w)
+
+
 def sliding_chunks_matmul_qk(q: torch.Tensor, k: torch.Tensor, w: int, padding_value: float):
     '''Matrix multiplicatio of query x key tensors using with a sliding window attention pattern.
     This implementation splits the input into overlapping chunks of size 2w (e.g. 512 for pretrained Longformer)
@@ -103,6 +128,16 @@ def sliding_chunks_matmul_qk(q: torch.Tensor, k: torch.Tensor, w: int, padding_v
 
     mask_invalid_locations(diagonal_attn, w, 1, False)
     return diagonal_attn
+
+
+def sliding_chunks_matmul_pv_2(prob: torch.Tensor, v: torch.Tensor, w: int):
+    bsz, seqlen, num_heads, head_dim = v.size()
+    chunk_prob = prob.view(bsz, seqlen // w, w, num_heads, 3, w)
+    chunk_v = v.view(bsz, seqlen // w, w, num_heads, head_dim)
+    context = torch.einsum('bcwhd,bcdhe->bcwhe', (chunk_prob[:, :, :, :, 1], chunk_v))
+    context += torch.einsum('bcwhd,bcdhe->bcwhe', (chunk_prob[:, :, :, :, 0], chunk_v.roll(shifts=1, dims=1)))
+    context += torch.einsum('bcwhd,bcdhe->bcwhe', (chunk_prob[:, :, :, :, 2], chunk_v.roll(shifts=-1, dims=1)))
+    return context.reshape(bsz, seqlen, num_heads, head_dim)
 
 
 def sliding_chunks_matmul_pv(prob: torch.Tensor, v: torch.Tensor, w: int):

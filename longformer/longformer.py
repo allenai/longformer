@@ -5,6 +5,7 @@ from torch import nn
 import torch.nn.functional as F
 from longformer.diagonaled_mm_tvm import diagonaled_mm as diagonaled_mm_tvm, mask_invalid_locations
 from longformer.sliding_chunks import sliding_chunks_matmul_qk, sliding_chunks_matmul_pv
+from longformer.sliding_chunks import sliding_chunks_matmul_qk_2, sliding_chunks_matmul_pv_2
 from transformers.modeling_roberta import RobertaConfig, RobertaModel, RobertaForMaskedLM
 
 try:
@@ -162,9 +163,11 @@ class LongformerSelfAttention(nn.Module):
             k = k.float().contiguous()
             attn_weights = diagonaled_mm_tvm(q, k, self.attention_window, self.attention_dilation, False, 0, False)
             mask_invalid_locations(attn_weights, self.attention_window, self.attention_dilation, False)
-        else:  # "sliding_chunks"
+        elif self.attention_mode == 'sliding_chunks':
             # attn_weights = torch.einsum('blhd,bshd->blhs', (q, k))  # For testing
             attn_weights = sliding_chunks_matmul_qk(q, k, self.attention_window, padding_value=0)
+        elif self.attention_mode == 'sliding_chunks2':
+            attn_weights = sliding_chunks_matmul_qk_2(q, k, self.attention_window, padding_value=0)
 
         if remove_from_windowed_attention_mask is not None:
             # This implementation is fast and takes very little memory because num_heads x hidden_size = 1
@@ -178,10 +181,12 @@ class LongformerSelfAttention(nn.Module):
             # diagonal mask with zeros everywhere and -inf inplace of padding
             if self.attention_mode == 'tvm':
                 d_mask = diagonaled_mm_tvm(ones, float_mask, self.attention_window, self.attention_dilation, False, 0, False)
-            else:
+            elif self.attention_mode == 'sliding_chunks':
                 d_mask = sliding_chunks_matmul_qk(ones, float_mask, self.attention_window, padding_value=0)
+            elif self.attention_mode == 'sliding_chunks2':
+                d_mask = sliding_chunks_matmul_qk_2(ones, float_mask, self.attention_window, padding_value=0)
             attn_weights += d_mask
-        assert list(attn_weights.size()) == [bsz, seq_len, self.num_heads, self.attention_window * 2 + 1]
+        # assert list(attn_weights.size()) == [bsz, seq_len, self.num_heads, self.attention_window * 2 + 1]
 
         # the extra attention
         if extra_attention_mask is not None:
@@ -224,10 +229,12 @@ class LongformerSelfAttention(nn.Module):
         if self.attention_mode == 'tvm':
             v = v.float().contiguous()
             attn += diagonaled_mm_tvm(attn_probs, v, self.attention_window, self.attention_dilation, True, 0, False)
-        else:  # "sliding_chunks"
+        elif self.attention_mode == 'sliding_chunks':
             # attn += torch.einsum('blhs,bshd->blhd', (attn_probs, v))  # For testing
             # attn += torch.matmul(attn_probs.transpose(1, 2), v.transpose(1, 2)).transpose(1, 2)  # For testing
             attn += sliding_chunks_matmul_pv(attn_probs, v, self.attention_window)
+        elif self.attention_mode == 'sliding_chunks2':
+            attn += sliding_chunks_matmul_pv_2(attn_probs, v, self.attention_window)
 
         attn = attn.type_as(hidden_states)
         assert list(attn.size()) == [bsz, seq_len, self.num_heads, self.head_dim]
