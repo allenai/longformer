@@ -202,6 +202,7 @@ class Pretrainer(ptl.LightningModule):
             self.model = LongformerForMaskedLM.from_pretrained(args.model, config=self.config)
             for i, layer in enumerate(self.model.roberta.encoder.layer):
                 layer.attention.self.global_tokens = 0
+                layer.attention.self.attention_mode = 'sliding_chunks2'
         else:
             self.model = AutoModelForMaskedLM.from_pretrained(args.model)
         self.config = self.model.config
