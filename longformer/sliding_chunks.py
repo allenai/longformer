@@ -53,6 +53,21 @@ def _chunk(x, w):
     return x.as_strided(size=chunk_size, stride=chunk_stride)
 
 
+def sliding_chunks_matmul_qk_3(q: torch.Tensor, k: torch.Tensor, w: int, padding_value: float):
+    bsz, seqlen, num_heads, head_dim = q.size()
+    assert seqlen % w == 0
+    assert q.size() == k.size()
+    # chunk seqlen into non-overlapping chunks of size w
+    chunk_q = q.view(bsz, seqlen // w, w, num_heads, head_dim)
+    chunk_k = k.view(bsz, seqlen // w, w, num_heads, head_dim)
+    chunk_q_expanded = torch.stack((chunk_q.roll(shifts=-1, dims=1), chunk_q, chunk_q.roll(shifts=1, dims=1)), dim=-1)
+    chunk_q_expanded = torch.stack((chunk_q, chunk_q, chunk_q), dim=-1)
+    diagonal_attn = torch.einsum('bcxhde,bcyhd->bcxhey', (chunk_q_expanded, chunk_k))  # multiply
+    diagonal_attn[:, :, :, :, 0] = F.pad(diagonal_attn[:, :-1, :, :, 0], (0, 0, 0, 0, 0, 0, 1, 0), value=-float('inf'))
+    diagonal_attn[:, :, :, :, 2] = F.pad(diagonal_attn[:, 1:, :, :, 2], (0, 0, 0, 0, 0, 0, 0, 1), value=-float('inf'))
+    return diagonal_attn.reshape(bsz, seqlen, num_heads, 3 * w)
+
+
 def sliding_chunks_matmul_qk_2(q: torch.Tensor, k: torch.Tensor, w: int, padding_value: float):
     bsz, seqlen, num_heads, head_dim = q.size()
     assert seqlen % w == 0
@@ -69,8 +84,9 @@ def sliding_chunks_matmul_qk_2(q: torch.Tensor, k: torch.Tensor, w: int, padding
     upper_diagonal_mask = q.new_ones((w, w)).tril()[None, None, :, None].bool()
     chunk_attn_upper_diagonal.masked_fill_(~upper_diagonal_mask, -float('inf'))
 
-    chunk_attn_lower_diagonal = torch.einsum('bcxhd,bcyhd->bcxhy', (chunk_q, chunk_k.roll(shifts=1, dims=1)))
-    chunk_attn_lower_diagonal[:, 0] = -float('inf')
+    chunk_attn_lower_diagonal = torch.einsum('bcxhd,bcyhd->bcxhy', (chunk_q.roll(shifts=-1, dims=1), chunk_k))
+    chunk_attn_lower_diagonal[:, -1] = -float('inf')
+    chunk_attn_lower_diagonal = chunk_attn_lower_diagonal.roll(shifts=1, dims=1)
     lower_diagonal_mask = q.new_ones((w, w)).triu()[None, None, :, None].bool()
     chunk_attn_lower_diagonal.masked_fill_(~lower_diagonal_mask, -float('inf'))
 
@@ -128,6 +144,16 @@ def sliding_chunks_matmul_qk(q: torch.Tensor, k: torch.Tensor, w: int, padding_v
 
     mask_invalid_locations(diagonal_attn, w, 1, False)
     return diagonal_attn
+
+
+def sliding_chunks_matmul_pv_3(prob: torch.Tensor, v: torch.Tensor, w: int):
+    bsz, seqlen, num_heads, head_dim = v.size()
+    chunk_prob = prob.view(bsz, seqlen // w, w, num_heads, 3, w)
+    chunk_v = v.view(bsz, seqlen // w, w, num_heads, head_dim)
+    chunk_v_extended = torch.stack((chunk_v.roll(shifts=1, dims=1), chunk_v, chunk_v.roll(shifts=-1, dims=1)), dim=-1)
+    chunk_v_extended = torch.stack((chunk_v, chunk_v, chunk_v), dim=-1)
+    context = torch.einsum('bcwhpd,bcdhep->bcwhe', (chunk_prob, chunk_v_extended))
+    return context.reshape(bsz, seqlen, num_heads, head_dim)
 
 
 def sliding_chunks_matmul_pv_2(prob: torch.Tensor, v: torch.Tensor, w: int):
