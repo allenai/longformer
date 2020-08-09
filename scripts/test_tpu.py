@@ -44,7 +44,7 @@ class CoolSystem(pl.LightningModule):
         print('==========', param_count_before_moving_to_device, param_count_after_moving_to_device)
 
     def forward(self, x, y):
-        # print(x.shape, self.model.roberta.encoder.layer[23].attention.self.attention_window)
+        print(x.shape, self.model.roberta.encoder.layer[23].attention.self.attention_window)
         return self.model(x, attention_mask=y)
 
     def training_step(self, batch, batch_idx):
