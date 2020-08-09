@@ -89,8 +89,8 @@ class LongformerSelfAttention(nn.Module):
         self.autoregressive = config.autoregressive
         assert self.attention_window > 0
         assert self.attention_dilation > 0
-        assert self.attention_mode in ['tvm', 'sliding_chunks']
-        if self.attention_mode == 'sliding_chunks':
+        assert self.attention_mode in ['tvm', 'sliding_chunks', 'sliding_chunks2']
+        if not self.attention_mode == 'tvm':
             assert not self.autoregressive  # not supported
             assert self.attention_dilation == 1  # dilation is not supported
 
