@@ -198,11 +198,11 @@ class Pretrainer(ptl.LightningModule):
         if 'longformer' in args.model and args.model.endswith('/'):  # local path on the disk
             from longformer.longformer import LongformerForMaskedLM, LongformerConfig
             self.config = LongformerConfig.from_pretrained(args.model)
-            self.config.attention_mode = 'sliding_chunks'
+            self.config.attention_mode = args.attention_mode
             self.model = LongformerForMaskedLM.from_pretrained(args.model, config=self.config)
             for i, layer in enumerate(self.model.roberta.encoder.layer):
-                layer.attention.self.global_tokens = 0
-                layer.attention.self.attention_mode = 'sliding_chunks2'
+                layer.attention.self.global_tokens = args.global_tokens
+                layer.attention.self.attention_window = args.attention_window
         else:
             self.model = AutoModelForMaskedLM.from_pretrained(args.model)
         self.config = self.model.config
@@ -248,7 +248,7 @@ class Pretrainer(ptl.LightningModule):
         }
         if not self.use_tpu:
             # logging additional losses is slow on tpu
-            tensorboard_logs['mlm_loss'] =  loss
+            tensorboard_logs['mlm_loss'] = loss
             tensorboard_logs['mlm_bpc'] = loss/math.log(2)
             tensorboard_logs['mlm_perplexity'] = torch.exp(loss)
 
@@ -258,7 +258,6 @@ class Pretrainer(ptl.LightningModule):
         self.start_time = time.time()
         if self.on_gpu:
             tensorboard_logs['memory'] = torch.cuda.memory_allocated(loss.device) / 1024 ** 3
-
         return {'loss': loss, 'log': tensorboard_logs}
 
     def validation_step(self, batch, batch_nb):
@@ -369,6 +368,11 @@ class Pretrainer(ptl.LightningModule):
         # HF model loading
         parser.add_argument("--tokenizer", type=str, default='roberta-base')
         parser.add_argument("--model", type=str, default='roberta-base')
+
+        # Longformer attention params
+        parser.add_argument("--attention_mode", type=str, default='sliding_chunks')
+        parser.add_argument("--attention_window", type=int, default=256)
+        parser.add_argument("--global_tokens", type=int, default=0)
 
         # Checkpointing and logging
         parser.add_argument("--save_dir", type=str, default='runs/')
