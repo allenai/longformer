@@ -60,8 +60,12 @@ def sliding_chunks_matmul_qk_3(q: torch.Tensor, k: torch.Tensor, w: int, padding
     # chunk seqlen into non-overlapping chunks of size w
     chunk_q = q.view(bsz, seqlen // w, w, num_heads, head_dim)
     chunk_k = k.view(bsz, seqlen // w, w, num_heads, head_dim)
-    chunk_k_expanded = torch.stack((chunk_k.roll(shifts=1, dims=1), chunk_k, chunk_k.roll(shifts=-1, dims=1)), dim=-1)
-    diagonal_attn = torch.einsum('bcxhde,bcyhd->bcxhey', (chunk_q, chunk_k_expanded))  # multiply
+    chunk_k_expanded = torch.stack((
+        chunk_k.roll(shifts=1, dims=1),
+        chunk_k,
+        chunk_k.roll(shifts=-1, dims=1)
+    ), dim=-1)
+    diagonal_attn = torch.einsum('bcxhd,bcyhde->bcxhey', (chunk_q, chunk_k_expanded))  # multiply
     return diagonal_attn.reshape(bsz, seqlen, num_heads, 3 * w)
 
 
@@ -145,7 +149,11 @@ def sliding_chunks_matmul_pv_3(prob: torch.Tensor, v: torch.Tensor, w: int):
     bsz, seqlen, num_heads, head_dim = v.size()
     chunk_prob = prob.view(bsz, seqlen // w, w, num_heads, 3, w)
     chunk_v = v.view(bsz, seqlen // w, w, num_heads, head_dim)
-    chunk_v_extended = torch.stack((chunk_v.roll(shifts=1, dims=1), chunk_v, chunk_v.roll(shifts=-1, dims=1)), dim=-1)
+    chunk_v_extended = torch.stack((
+        chunk_v.roll(shifts=1, dims=1),
+        chunk_v,
+        chunk_v.roll(shifts=-1, dims=1)
+    ), dim=-1)
     context = torch.einsum('bcwhpd,bcdhep->bcwhe', (chunk_prob, chunk_v_extended))
     return context.reshape(bsz, seqlen, num_heads, head_dim)
 
