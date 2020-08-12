@@ -5,6 +5,7 @@ import os
 from transformers import BartTokenizer
 
 from transformers import BartForConditionalGeneration
+from transformers.modeling_bart import shift_tokens_right
 from longformer.longformer_encoder_decoder import LongformerSelfAttentionForBart, LongformerEncoderDecoderConfig
 from longformer.longformer_encoder_decoder import LongformerEncoderDecoderForConditionalGeneration
 
@@ -14,10 +15,10 @@ logging.basicConfig(level=logging.INFO)
 
 def create_long_model(
     save_model_to,
-    base_model='facebook/bart-large',
-    tokenizer_name_or_path='facebook/bart-large',
-    attention_window=512,
-    max_pos=4096
+    base_model,
+    tokenizer_name_or_path,
+    attention_window,
+    max_pos
 ):
     model = BartForConditionalGeneration.from_pretrained(base_model)
     tokenizer = BartTokenizer.from_pretrained(tokenizer_name_or_path, model_max_length=max_pos)
@@ -35,7 +36,9 @@ def create_long_model(
     current_max_pos, embed_size = model.model.encoder.embed_positions.weight.shape
     assert current_max_pos == config.max_position_embeddings + 2
 
-    config.max_position_embeddings = max_pos
+    config.max_encoder_position_embeddings = max_pos
+    config.max_decoder_position_embeddings = config.max_position_embeddings
+    del config.max_position_embeddings
     max_pos += 2  # NOTE: BART has positions 0,1 reserved, so embedding size is max position + 2
     assert max_pos >= current_max_pos
 
@@ -50,14 +53,14 @@ def create_long_model(
     model.model.encoder.embed_positions.weight.data = new_encoder_pos_embed
 
     # allocate a larger position embedding matrix for the decoder
-    new_decoder_pos_embed = model.model.decoder.embed_positions.weight.new_empty(max_pos, embed_size)
-    # copy position embeddings over and over to initialize the new position embeddings
-    k = 2
-    step = current_max_pos - 2
-    while k < max_pos - 1:
-        new_decoder_pos_embed[k:(k + step)] = model.model.decoder.embed_positions.weight[2:]
-        k += step
-    model.model.decoder.embed_positions.weight.data = new_decoder_pos_embed
+    # new_decoder_pos_embed = model.model.decoder.embed_positions.weight.new_empty(max_pos, embed_size)
+    # # copy position embeddings over and over to initialize the new position embeddings
+    # k = 2
+    # step = current_max_pos - 2
+    # while k < max_pos - 1:
+    #     new_decoder_pos_embed[k:(k + step)] = model.model.decoder.embed_positions.weight[2:]
+    #     k += step
+    # model.model.decoder.embed_positions.weight.data = new_decoder_pos_embed
 
     # replace the `modeling_bart.SelfAttention` object with `LongformerSelfAttention`
     config.attention_window = [attention_window] * config.num_hidden_layers
@@ -107,12 +110,12 @@ def main():
         '--attention_window',
         type=int,
         default=512,
-        help='attention window size for longformer self attention'
+        help='attention window size for longformer self attention (one sided)'
     )
     parser.add_argument(
         '--max_pos',
         type=int,
-        default=4096,
+        default=4096 * 4,
         help='maximum encoder positions'
     )
 
@@ -137,11 +140,12 @@ def main():
     data = tokenizer([TXT], return_tensors='pt', padding='max_length', max_length=2048)
     input_ids = data['input_ids']
     attention_mask = data['attention_mask']
-    logits = model(input_ids, attention_mask=attention_mask)[0]
+    decoder_input_ids = shift_tokens_right(input_ids[:, :5], tokenizer.pad_token_id)
+    logits = model(input_ids, attention_mask=attention_mask, decoder_input_ids=decoder_input_ids, use_cache=False)[0]
     masked_index = (input_ids[0] == tokenizer.mask_token_id).nonzero().item()
     probs = logits[0, masked_index].softmax(dim=0)
     values, predictions = probs.topk(5)
-    print(tokenizer.decode(predictions).split())
+    print(tokenizer.convert_ids_to_tokens(predictions))
 
 
 if __name__ == "__main__":
