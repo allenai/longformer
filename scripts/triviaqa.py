@@ -9,7 +9,7 @@ import torch
 from torch.optim.lr_scheduler import LambdaLR
 
 from torch.utils.data import DataLoader, Dataset
-from transformers import RobertaTokenizer
+from transformers import RobertaTokenizer, AutoModel
 from scripts.triviaqa_utils import evaluation_utils
 
 import pytorch_lightning as pl
@@ -263,10 +263,13 @@ class TriviaQA(pl.LightningModule):
         self.train_dataloader_object = self.val_dataloader_object = self.test_dataloader_object = None
 
     def load_model(self):
-        model = Longformer.from_pretrained(self.args.model_path)
-        for layer in model.encoder.layer:
-            layer.attention.self.attention_mode = self.args.attention_mode
-            self.args.attention_window = layer.attention.self.attention_window
+        if 'longformer' in self.args.model_path:
+            model = Longformer.from_pretrained(self.args.model_path)
+            for layer in model.encoder.layer:
+                layer.attention.self.attention_mode = self.args.attention_mode
+                self.args.attention_window = layer.attention.self.attention_window
+        else:
+            model = AutoModel.from_pretrained(self.args.model_path)
 
         print("Loaded model with config:")
         print(model.config)
@@ -277,29 +280,34 @@ class TriviaQA(pl.LightningModule):
         return model
 
     def forward(self, input_ids, attention_mask, segment_ids, start_positions, end_positions):
-        question_end_index = self._get_question_end_index(input_ids)
-        # Each batch is one document, and each row of the batch is a chunck of the document.
-        # Make sure all rows have the same question length.
-        assert (question_end_index[0].float() == question_end_index.float().mean()).item()
+        if 'longformer' in self.args.model_path:
+            question_end_index = self._get_question_end_index(input_ids)
+            # Each batch is one document, and each row of the batch is a chunck of the document.
+            # Make sure all rows have the same question length.
+            assert (question_end_index[0].float() == question_end_index.float().mean()).item()
 
-        # local attention everywhere
-        attention_mask = torch.ones(input_ids.shape, dtype=torch.long, device=input_ids.device)
-        # global attention for the question tokens
-        attention_mask[:, :question_end_index.item()] = 2
+            # local attention everywhere
+            attention_mask = torch.ones(input_ids.shape, dtype=torch.long, device=input_ids.device)
+            # global attention for the question tokens
+            attention_mask[:, :question_end_index.item()] = 2
 
-        # sliding_chunks implemenation of selfattention requires that seqlen is multiple of window size
-        input_ids, attention_mask = pad_to_window_size(
-            input_ids, attention_mask, self.args.attention_window, self.tokenizer.pad_token_id)
+            # sliding_chunks implemenation of selfattention requires that seqlen is multiple of window size
+            input_ids, attention_mask = pad_to_window_size(
+                input_ids, attention_mask, self.args.attention_window, self.tokenizer.pad_token_id)
 
-        sequence_output = self.model(
-                input_ids,
-                attention_mask=attention_mask)[0]
+            sequence_output = self.model(
+                    input_ids,
+                    attention_mask=attention_mask)[0]
 
-        # The pretrained TriviaQA model wasn't trained with padding, so remove padding tokens
-        # before computing loss and decoding.
-        padding_len = input_ids[0].eq(self.tokenizer.pad_token_id).sum()
-        if padding_len > 0:
-            sequence_output = sequence_output[:, :-padding_len]
+            # The pretrained TriviaQA model wasn't trained with padding, so remove padding tokens
+            # before computing loss and decoding.
+            padding_len = input_ids[0].eq(self.tokenizer.pad_token_id).sum()
+            if padding_len > 0:
+                sequence_output = sequence_output[:, :-padding_len]
+        else:
+            sequence_output = self.model(
+                    input_ids,
+                    attention_mask=attention_mask)[0]
 
         logits = self.qa_outputs(sequence_output)
         start_logits, end_logits = logits.split(1, dim=-1)
@@ -637,6 +645,7 @@ class TriviaQA(pl.LightningModule):
         parser.add_argument("--attention_mode", type=str, choices=['tvm', 'sliding_chunks'],
                             default='sliding_chunks', help='Which implementation of selfattention to use')
         parser.add_argument("--fp32", action='store_true', help="default is fp16. Use --fp32 to switch to fp32")
+        # parser.add_argument("--seq2seq", action='store_true', help="Use an answer generation model")
 
         return parser
 
