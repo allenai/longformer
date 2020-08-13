@@ -42,16 +42,18 @@ def _process_file(full_fname, args):
     global tokenizer
     "Step 1: tokenize an input text file then save token ids into `np.memmap` shards of size `args.shard_size`"
     fname = full_fname.split('/')[-1]
-    log_filename = f'{args.input_dir}/logs-{args.shard_size}/{fname}.log'
+
+    logging.info(f'Processing {full_fname} ...')
+    if args.tfrecord:
+        fin = tf.data.TFRecordDataset(full_fname)
+        log_filename = f'{args.output_dir}/logs-{fname}.log'
+    else:
+        fin = open(full_fname, 'r')
+        log_filename = f'{args.output_dir}/logs-{args.shard_size}/{fname}.log'
+
     if os.path.isfile(log_filename):
         logging.info(f'Skipping {full_fname} ...')
         return  # log file already exists. Skip current file.
-
-    logging.info(f'Processing {full_fname} ...')
-    if args.tfrecord_reader:
-        fin = tf.data.TFRecordDataset(full_fname)
-    else:
-        fin = open(full_fname, 'r')
     # with open(full_fname, 'r') as fin:
     token_list = []
     shard_count = 0
@@ -62,21 +64,23 @@ def _process_file(full_fname, args):
             return
         if token_list[-1] != tokenizer.sep_token_id:  # handle a rare case
             token_list.append(tokenizer.sep_token_id)
-        if args.tfrecord_reader:
+        if args.tfrecord:
             shared_filename = f'{args.output_dir}/{fname}.bin'
         else:
-            shared_filename = f'{args.input_dir}/shards-{args.shard_size}/{fname}-{shard_count}.bin'
+            shared_filename = f'{args.output_dir}/shards-{args.shard_size}/{fname}-{shard_count}.bin'
         logging.info(f'Writing {len(token_list)} tokens to shared {shared_filename}')
         fp = np.memmap(shared_filename, dtype=np.uint16, mode='w+', shape=len(token_list))
         fp[:] = token_list[:]
         del fp  # flush and close file
 
-    if not args.tfrecord_reader:
+    if not args.tfrecord:  # the input file is one doc per line
         for line in tqdm(fin):
             line = line.strip()
             if line == '':  # drop empty lines
                 continue
             tokens = tokenizer.encode(line, add_special_tokens=False)  # `__getitem__` adds special tokens
+            if args.add_sep_after_doc:
+                tokens.append(tokenizer.sep_token_id)
             token_list.extend(tokens)
             if len(token_list) > args.shard_size:
                 _write_shard()
@@ -87,19 +91,21 @@ def _process_file(full_fname, args):
                 token_list.append(tokenizer.sep_token_id)
         tokens_count += len(token_list)
         _write_shard()
-    else:
+    else:  # the input file is tfrecord format of the c4 dataset
         for raw_example in tqdm(iter(fin)):
             parsed = tf.train.Example.FromString(raw_example.numpy())
             feature_keys = set(parsed.features.feature.keys())
             if 'text' in feature_keys:
                 line = parsed.features.feature['text'].bytes_list.value[0].decode()  # raw text 
                 tokens = tokenizer.encode(line, add_special_tokens=False)  # `__getitem__` adds special tokens
+                if args.add_sep_after_doc:
+                    tokens.append(tokenizer.sep_token_id)
                 token_list.extend(tokens)
                 tokens_count += len(token_list)
             shard_count += 1
         _write_shard()
 
-    if not args.tfrecord_reader:
+    if not args.tfrecord:
         fin.close()
 
     with open(log_filename, 'w') as f:
@@ -136,7 +142,7 @@ def raw_text_to_mmap(args):
     later on. Notice that this is the "FULL-SENTENCES" setting in the RoBERTa paper, Table2.
     Example running the preprocessing:
         >>> python scripts/pretrain.py --input_dir dirWithTextFiles --train_dev_split 0.05  \
-                                        --shard_size  268435456  --num_preprocessing_workers 16
+                                        --shard_size  268435456  --num_workers 16
     """
     global tokenizer
     pathlib.Path(args.output_dir).mkdir(parents=True, exist_ok=True)
@@ -148,36 +154,41 @@ def raw_text_to_mmap(args):
 
     args.input_dir = str(pathlib.Path(args.input_files).parent)
 
-    if not args.tfrecord_reader:
+    if not args.tfrecord:
         try:
-            os.mkdir(f'{args.input_dir}/shards-{args.shard_size}/')
+            os.mkdir(f'{args.output_dir}/shards-{args.shard_size}/')
         except FileExistsError:
             pass
         try:
-            os.mkdir(f'{args.input_dir}/logs-{args.shard_size}/')  # log progrss to be able to resume
+            os.mkdir(f'{args.output_dir}/logs-{args.shard_size}/')  # log progrss to be able to resume
         except FileExistsError:
             pass
 
     # STEP1: tokenizing and saving to shards
     process_fn = functools.partial(_process_file, args=args)
-    if args.num_preprocessing_workers > 1:
+    if args.num_workers > 1:
         from multiprocessing.pool import Pool
-        with Pool(args.num_preprocessing_workers) as p:
+        with Pool(args.num_workers) as p:
             list(tqdm(p.imap(process_fn, all_files), total=len(all_files)))
     else:
         [process_fn(f) for f in tqdm(all_files)]
 
-    if not args.tfrecord_reader:  # c4 tfrecords are already sharded
+    if not args.tfrecord:  # c4 tfrecords are already sharded
         # STEP2: shuffling shards and combining them into train.bin and val.bin files
-        all_shards = glob.glob(f'{args.input_dir}/shards-{args.shard_size}/*.bin')
+        all_shards = glob.glob(f'{args.output_dir}/shards-{args.shard_size}/*.bin')
         random.shuffle(all_shards)  # shuffling based on shards not individual lines
         val_shards_count = int(args.train_dev_split * len(all_shards))
         val_shards = all_shards[:val_shards_count]
         train_shards = all_shards[val_shards_count:]
         # TODO: if MMapTextDataset._combining_shards is very slow for large files, it can be skipped but we nned to
         # update the dataset to read from multiple shards directly
-        _combine_shards(f'{args.input_dir}/cache/val.bin', val_shards)
-        _combine_shards(f'{args.input_dir}/cache/train.bin', train_shards)
+        _combine_shards(f'{args.output_dir}/val.bin', val_shards)
+        _combine_shards(f'{args.output_dir}/train.bin', train_shards)
+    else:
+        train_shards = glob.glob(f'{args.output_dir}/*train*.bin')
+        val_shards = glob.glob(f'{args.output_dir}/*val*.bin')
+        _combine_shards(f'{args.output_dir}/val.bin', val_shards)
+        _combine_shards(f'{args.output_dir}/train.bin', train_shards)
 
     del tokenizer
 # ========================= end preprocessing code ========================= #
@@ -189,14 +200,14 @@ def add_args(parser):
     # Used only at the preprocessing phase
     parser.add_argument("--train_dev_split", type=float, default=0.05)
     parser.add_argument("--shard_size", type=int, default=1024 ** 3 // 4)  # 250MB
-    parser.add_argument("--num_preprocessing_workers", type=int, default=1)
+    parser.add_argument("--num_workers", type=int, default=1)
     # Used only at the training phase
-    parser.add_argument("--seqlen", type=int, default=512)
 
     # HF model loading
     parser.add_argument("--tokenizer", type=str, default='roberta-base')
     parser.add_argument("--model", type=str, default='roberta-base')
-    parser.add_argument("--tfrecord_reader", action='store_true', default=False)
+    parser.add_argument("--tfrecord", action='store_true', default=False, help='the input files are tfrecords (for c4 dataset)')
+    parser.add_argument("--add_sep_after_doc", action='store_true', default=False, help='add sep token after document')
 
     return parser
 
