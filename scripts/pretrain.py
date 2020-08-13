@@ -65,128 +65,6 @@ class MMapTextDataset(Dataset):
         data = np.concatenate(([self._bos_token_id], self.token_ids[from_index:to_index], [self._eos_token_id]))
         return torch.tensor(data, dtype=torch.long)
 
-    # ========================= preprocessing code ========================= #
-    @staticmethod
-    def _process_file(full_fname):
-        "Step 1: tokenize an input text file then save token ids into `np.memmap` shards of size `args.shard_size`"
-        fname = full_fname.split('/')[-1]
-        log_filename = f'{args.input_dir}/logs-{args.shard_size}/{fname}.log'
-        if os.path.isfile(log_filename):
-            logging.info(f'Skipping {full_fname} ...')
-            return  # log file already exists. Skip current file.
-
-        logging.info(f'Processing {full_fname} ...')
-        with open(full_fname, 'r') as fin:
-            token_list = []
-            shard_count = 0
-            tokens_count = 0
-
-            def _write_shard():
-                if len(token_list) == 0:
-                    return
-                if token_list[-1] != MMapTextDataset.tokenizer.sep_token_id:  # handle a rare case
-                    token_list.append(MMapTextDataset.tokenizer.sep_token_id)
-                shared_filename = f'{args.input_dir}/shards-{args.shard_size}/{fname}-{shard_count}.bin'
-                logging.info(f'Writing {len(token_list)} tokens to shared {shared_filename}')
-                fp = np.memmap(shared_filename, dtype=np.uint16, mode='w+', shape=len(token_list))
-                fp[:] = token_list[:]
-                del fp  # flush and close file
-            for line in tqdm(fin):
-                line = line.strip()
-                if line == '':  # drop empty lines
-                    continue
-                tokens = MMapTextDataset.tokenizer.encode(line, add_special_tokens=False)  # `__getitem__` adds special tokens
-                token_list.extend(tokens)
-                if len(token_list) > args.shard_size:
-                    _write_shard()
-                    tokens_count += len(token_list)
-                    token_list = []
-                    shard_count += 1
-                else:
-                    token_list.append(MMapTextDataset.tokenizer.sep_token_id)
-            _write_shard()
-            tokens_count += len(token_list)
-        with open(log_filename, 'w') as f:
-            f.write(f'Generated {tokens_count} tokens in {shard_count + 1} shards')
-
-    @staticmethod
-    def _combine_shards(output_fname, shards_list):
-        "Step 2: combining memmap shards into one `train.bin` or `val.bin` file"
-        total_size = 0
-        for filename in shards_list:
-            total_size += np.memmap(filename, mode='r', dtype=np.uint16).shape[0]
-        logging.info(f'Writing {total_size} tokens to {output_fname}')
-        all_token_ids = np.empty(total_size, dtype=np.uint16)
-        last_token_index = 0
-        for filename in tqdm(shards_list):
-            shared = np.memmap(filename, mode='r', dtype=np.uint16)
-            all_token_ids[last_token_index:last_token_index+len(shared)] = shared[:]
-            last_token_index += len(shared)
-        fp = np.memmap(output_fname, dtype=np.uint16, mode='w+', shape=total_size)
-        fp[:] = all_token_ids[:]
-        del fp
-
-    @staticmethod
-    def raw_text_to_mmap(args):
-        """This is the main preprocessing function. It processes all the text files in `args.input_dir` and
-        outputs two np.memmap files, one for training and one for validation with ratio `args.train_dev_split`.
-        Processing each input file involves tokenizing it, sharding it into shards of size `args.shard_size`,
-        then writing each shard as an np.memmap file, shuffle the shards, split them into train and dev shards,
-        then combine the shards of each set into one big file (train.bin and val.bin).
-        Notice that only the shards are shuffled not the instances inside each shard. Therefor, it is important
-        to use `args.shard_size` that's small enough to have a good train/dev split, but also not small enough
-        to end up with a huge number of shards that might be difficult to work with.
-        The stream of tokens in the memmap files represents documents separated with `tokenizer.sep_token`.
-        In `__getitem__`, the `tokenizer.bos_token` and `tokenizer.eos_token`
-        are added. The reason for not adding them at preprocessing time is to allow different sequence lengths
-        later on. Notice that this is the "FULL-SENTENCES" setting in the RoBERTa paper, Table2.
-        Example running the preprocessing:
-            >>> python scripts/pretrain.py --input_dir dirWithTextFiles --train_dev_split 0.05  \
-                                           --shard_size  268435456  --num_preprocessing_workers 16
-        """
-        MMapTextDataset.tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, use_fast=True)
-        assert len(MMapTextDataset.tokenizer) < 65535  # will use uint16 to store token ids
-        all_files = glob.glob(f'{args.input_dir}/*.txt')
-
-        if os.path.exists(f'{args.input_dir}/cache/train.bin') and os.path.exists(f'{args.input_dir}/cache/val.bin'):
-            logger.info("Cache already exists. Remove the cache directory to regenerate")
-            return
-        try:
-            os.mkdir(f'{args.input_dir}/cache/')
-        except FileExistsError:
-            pass
-        try:
-            os.mkdir(f'{args.input_dir}/shards-{args.shard_size}/')
-        except FileExistsError:
-            pass
-        try:
-            os.mkdir(f'{args.input_dir}/logs-{args.shard_size}/')  # log progrss to be able to resume
-        except FileExistsError:
-            pass
-
-        # STEP1: tokenizing and saving to shards
-        if args.num_preprocessing_workers > 1:
-            from multiprocessing.pool import Pool
-            with Pool(args.num_preprocessing_workers) as p:
-                list(tqdm(p.imap(MMapTextDataset._process_file, all_files), total=len(all_files)))
-        else:
-            [MMapTextDataset._process_file(f) for f in tqdm(all_files)]
-
-        # STEP2: shuffling shards and combining them into train.bin and val.bin files
-        all_shards = glob.glob(f'{args.input_dir}/shards-{args.shard_size}/*.bin')
-        random.shuffle(all_shards)  # shuffling based on shards not individual lines
-        val_shards_count = int(args.train_dev_split * len(all_shards))
-        val_shards = all_shards[:val_shards_count]
-        train_shards = all_shards[val_shards_count:]
-        # TODO: if MMapTextDataset._combining_shards is very slow for large files, it can be skipped but we nned to
-        # update the dataset to read from multiple shards directly
-        MMapTextDataset._combine_shards(f'{args.input_dir}/cache/val.bin', val_shards)
-        MMapTextDataset._combine_shards(f'{args.input_dir}/cache/train.bin', train_shards)
-
-        del MMapTextDataset.tokenizer
-    # ========================= end preprocessing code ========================= #
-
-
 class Pretrainer(ptl.LightningModule):
 
     def __init__(self, hparams):
@@ -210,9 +88,6 @@ class Pretrainer(ptl.LightningModule):
         self.pad_token_id = tokenizer.pad_token_id
         self.eos_token_id = tokenizer.eos_token_id
         self.bos_token_id = tokenizer.bos_token_id
-
-        logger.info(f'Creating dataset cache from dir {self.args.input_dir}. This could be slow the first time.')
-        MMapTextDataset.raw_text_to_mmap(args)
 
         # TODO: add support for other objective functions (whole word masking, BART, Pegasus)
         self.data_collator = DataCollatorForLanguageModeling(
@@ -333,10 +208,10 @@ class Pretrainer(ptl.LightningModule):
         return loader
 
     def train_dataloader(self):
-        return self._get_loader(f'{self.args.input_dir}/cache/train.bin', True)
+        return self._get_loader(f'{self.args.input_dir}/train.bin', True)
 
     def val_dataloader(self):
-        return self._get_loader(f'{self.args.input_dir}/cache/val.bin', False)
+        return self._get_loader(f'{self.args.input_dir}/val.bin', True)
 
     def grad_norm(self, norm_type):
         # Override PTL `grad_norm` function to only return `total_grad_norm` instead norms of individual params
@@ -358,10 +233,6 @@ class Pretrainer(ptl.LightningModule):
         # Dataset. Some of these params are only useful when generating the dataset cache
         parser.add_argument("--input_dir", type=str, default='/net/nfs.corp/s2-research/beltagy/longformer/data/')
         # Used only at the preprocessing phase
-        parser.add_argument("--train_dev_split", type=float, default=0.05)
-        parser.add_argument("--shard_size", type=int, default=1024 ** 3 // 4)  # 250MB
-        parser.add_argument("--num_preprocessing_workers", type=int, default=1)
-        # Used only at the training phase
         parser.add_argument("--seqlen", type=int, default=512)
         parser.add_argument("--mlm_prob", type=float, default=0.15)
 
