@@ -9,7 +9,7 @@ import torch
 from torch.optim.lr_scheduler import LambdaLR
 
 from torch.utils.data import DataLoader, Dataset
-from transformers import RobertaTokenizer, AutoModel
+from transformers import RobertaTokenizer, AutoModel, AutoConfig
 from scripts.triviaqa_utils import evaluation_utils
 
 import pytorch_lightning as pl
@@ -110,11 +110,13 @@ class TriviaQADataset(Dataset):
                     try:
                         start_position = char_to_word_offset[answer_offset]
                         end_position = char_to_word_offset[answer_offset + answer_length - 1]
-                    except:
+                        token_ids = self.tokenizer.encode(orig_answer_text)
+                    except RuntimeError:
                         print(f'Reading example {idx} failed')
                         start_position = 0
                         end_position = 0
-                    answer_spans.append({'start': start_position, 'end': end_position})
+                    answer_spans.append({'start': start_position, 'end': end_position,
+                                         'text': orig_answer_text, 'token_ids': token_ids})
 
                 # ===== Given an example, convert it into tensors  =============
                 query_tokens = self.tokenizer.tokenize(question_text)
@@ -146,6 +148,7 @@ class TriviaQADataset(Dataset):
                 segment_ids_list = []
                 start_positions_list = []
                 end_positions_list = []
+                answer_token_ids_list = []
                 for slice_start in range(0, len(all_doc_tokens), max_tokens_per_doc_slice - self.doc_stride):
                     slice_end = min(slice_start + max_tokens_per_doc_slice, len(all_doc_tokens))
 
@@ -172,6 +175,7 @@ class TriviaQADataset(Dataset):
                     doc_offset = len(query_tokens) + 2 - slice_start
                     start_positions = []
                     end_positions = []
+                    answer_token_ids = []
                     for answer_span in answer_spans:
                         start_position = answer_span['start']
                         end_position = answer_span['end']
@@ -183,6 +187,7 @@ class TriviaQADataset(Dataset):
                             continue
                         start_positions.append(tok_start_position_in_doc + doc_offset)
                         end_positions.append(tok_end_position_in_doc + doc_offset)
+                        answer_token_ids.append(answer_span['token_ids'])
                     assert len(start_positions) == len(end_positions)
                     if self.ignore_seq_with_no_answers and len(start_positions) == 0:
                         continue
@@ -190,32 +195,58 @@ class TriviaQADataset(Dataset):
                     # answers from start_positions and end_positions if > self.max_num_answers
                     start_positions = start_positions[:self.max_num_answers]
                     end_positions = end_positions[:self.max_num_answers]
+                    answer_token_ids = answer_token_ids[:self.max_num_answers]
 
                     # -1 padding up to self.max_num_answers
                     padding_len = self.max_num_answers - len(start_positions)
                     start_positions.extend([-1] * padding_len)
                     end_positions.extend([-1] * padding_len)
+                    answer_token_ids.extend([[]] * padding_len)
 
                     # replace duplicate start/end positions with `-1` because duplicates can result into -ve loss values
                     found_start_positions = set()
                     found_end_positions = set()
-                    for i, (start_position, end_position) in enumerate(zip(start_positions, end_positions)):
+                    found_answer_token_ids = set()
+                    for i, (start_position, end_position, answer_tokens) in enumerate(
+                            zip(start_positions, end_positions, answer_token_ids)
+                            ):
                         if start_position in found_start_positions:
                             start_positions[i] = -1
                         if end_position in found_end_positions:
                             end_positions[i] = -1
+                        answer_tokens_as_str = ','.join([str(x) for x in answer_tokens])
+                        if answer_tokens_as_str in found_answer_token_ids:
+                            answer_token_ids[i] = []
                         found_start_positions.add(start_position)
                         found_end_positions.add(end_position)
+                        found_answer_token_ids.add(answer_tokens_as_str)
 
                     input_ids_list.append(input_ids)
                     input_mask_list.append(input_mask)
                     segment_ids_list.append(segment_ids)
                     start_positions_list.append(start_positions)
                     end_positions_list.append(end_positions)
+                    answer_token_ids_list.append(answer_token_ids)
+
+                # pad answers in answer_token_ids_list to the longest answer
+                max_answer_len = max([len(item) for sublist in answer_token_ids_list for item in sublist])  # flat list
+                if max_answer_len == 0:
+                    max_answer_len = 2
+                for answers_of_one_slice in answer_token_ids_list:
+                    for answer_tokens in answers_of_one_slice:
+                        if len(answer_tokens) == 0:
+                            # TODO: <s></s><pad><pad><pad> or <pad><pad><pad><pad><pad> ?
+                            padding_len = max_answer_len - len(answer_tokens) - 2
+                            answer_tokens.extend([self.tokenizer.bos_token_id, self.tokenizer.eos_token_id] +
+                                                 ([self.tokenizer.pad_token_id] * padding_len))
+                        else:
+                            padding_len = max_answer_len - len(answer_tokens)
+                            answer_tokens.extend([self.tokenizer.pad_token_id] * padding_len)
 
                 tensors_list.append((torch.tensor(input_ids_list), torch.tensor(input_mask_list),
                                      torch.tensor(segment_ids_list),
                                      torch.tensor(start_positions_list), torch.tensor(end_positions_list),
+                                     torch.tensor(answer_token_ids_list),
                                      self._get_qid(qa['id']),  qa["aliases"]))  # for eval
         return tensors_list
 
@@ -268,6 +299,20 @@ class TriviaQA(pl.LightningModule):
             for layer in model.encoder.layer:
                 layer.attention.self.attention_mode = self.args.attention_mode
                 self.args.attention_window = layer.attention.self.attention_window
+        elif self.args.model_path in ['bart.large', 'bart.base']:
+            model = torch.hub.load('pytorch/fairseq', self.args.model_path)
+            model.config = model.args
+            model.config.hidden_size = model.config.decoder_output_dim
+        elif 'bart' in self.args.model_path and 'base' in self.args.model_path:
+            config = AutoConfig.from_pretrained(self.args.model_path)
+            config.encoder_attention_heads = 12
+            config.decoder_attention_heads = 12
+            config.attention_dropout = 0.1
+            model = AutoModel.from_pretrained(self.args.model_path, config=config)
+        elif 'bart' in self.args.model_path and 'large' in self.args.model_path:
+            config = AutoConfig.from_pretrained(self.args.model_path)
+            config.attention_dropout = 0.1
+            model = AutoModel.from_pretrained(self.args.model_path, config=config)
         else:
             model = AutoModel.from_pretrained(self.args.model_path)
 
@@ -279,7 +324,7 @@ class TriviaQA(pl.LightningModule):
         model.train()
         return model
 
-    def forward(self, input_ids, attention_mask, segment_ids, start_positions, end_positions):
+    def forward(self, input_ids, attention_mask, segment_ids, start_positions, end_positions, answer_token_ids):
         if 'longformer' in self.args.model_path:
             question_end_index = self._get_question_end_index(input_ids)
             # Each batch is one document, and each row of the batch is a chunck of the document.
@@ -304,6 +349,8 @@ class TriviaQA(pl.LightningModule):
             padding_len = input_ids[0].eq(self.tokenizer.pad_token_id).sum()
             if padding_len > 0:
                 sequence_output = sequence_output[:, :-padding_len]
+        elif self.args.model_path in ['bart.large', 'bart.base']:
+            sequence_output = self.model.extract_features(input_ids)
         else:
             sequence_output = self.model(
                     input_ids,
@@ -376,8 +423,8 @@ class TriviaQA(pl.LightningModule):
         return loss[~torch.isinf(loss)].sum()
 
     def training_step(self, batch, batch_nb):
-        input_ids, input_mask, segment_ids, subword_starts, subword_ends, qids, aliases = batch
-        output = self.forward(input_ids, input_mask, segment_ids, subword_starts, subword_ends)
+        input_ids, input_mask, segment_ids, subword_starts, subword_ends, answer_token_ids, qids, aliases = batch
+        output = self.forward(input_ids, input_mask, segment_ids, subword_starts, subword_ends, answer_token_ids)
         loss = output[0]
         lr = loss.new_zeros(1) + self.trainer.optimizers[0].param_groups[0]['lr']
         tensorboard_logs = {'train_loss': loss, 'lr': lr,
@@ -386,8 +433,8 @@ class TriviaQA(pl.LightningModule):
         return {'loss': loss, 'log': tensorboard_logs}
 
     def validation_step(self, batch, batch_nb):
-        input_ids, input_mask, segment_ids, subword_starts, subword_ends, qids, aliases = batch
-        output = self.forward(input_ids, input_mask, segment_ids, subword_starts, subword_ends)
+        input_ids, input_mask, segment_ids, subword_starts, subword_ends, answer_token_ids, qids, aliases = batch
+        output = self.forward(input_ids, input_mask, segment_ids, subword_starts, subword_ends, answer_token_ids)
         loss, start_logits, end_logits = output[:3]
         answers = self.decode(input_ids, start_logits, end_logits)
 
@@ -461,8 +508,8 @@ class TriviaQA(pl.LightningModule):
                 answers.append({'text': text, 'score': score})
         return answers
 
-    def sync_list_across_gpus(self, l, device, dtype):
-        l_tensor = torch.tensor(l, device=device, dtype=dtype)
+    def sync_list_across_gpus(self, list_to_sync, device, dtype):
+        l_tensor = torch.tensor(list_to_sync, device=device, dtype=dtype)
         gather_l_tensor = [torch.ones_like(l_tensor) for _ in range(self.trainer.world_size)]
         torch.distributed.all_gather(gather_l_tensor, l_tensor)
         return torch.cat(gather_l_tensor).tolist()
@@ -507,8 +554,8 @@ class TriviaQA(pl.LightningModule):
         return {'avg_val_loss': avg_loss, 'log': logs, 'progress_bar': logs}
 
     def test_step(self, batch, batch_nb):
-        input_ids, input_mask, segment_ids, subword_starts, subword_ends, qids, aliases = batch
-        output = self.forward(input_ids, input_mask, segment_ids, subword_starts, subword_ends)
+        input_ids, input_mask, segment_ids, subword_starts, subword_ends, answer_token_ids, qids, aliases = batch
+        output = self.forward(input_ids, input_mask, segment_ids, subword_starts, subword_ends, answer_token_ids)
         loss, start_logits, end_logits = output[:3]
         answers = self.decode(input_ids, start_logits, end_logits)
 
@@ -555,7 +602,7 @@ class TriviaQA(pl.LightningModule):
                                   max_num_answers=self.args.max_num_answers,
                                   max_question_len=self.args.max_question_len,
                                   ignore_seq_with_no_answers=self.args.ignore_seq_with_no_answers)
-        sampler = torch.utils.data.distributed.DistributedSampler(dataset) if self.trainer.use_ddp else None
+        sampler = torch.utils.data.distributed.DistributedSampler(dataset, shuffle=True) if self.trainer.use_ddp else None
         dl = DataLoader(dataset, batch_size=1, shuffle=(sampler is None),
                         num_workers=self.args.num_workers, sampler=sampler,
                         collate_fn=TriviaQADataset.collate_one_doc_and_lists)
@@ -572,8 +619,8 @@ class TriviaQA(pl.LightningModule):
                                   max_num_answers=self.args.max_num_answers,
                                   max_question_len=self.args.max_question_len,
                                   ignore_seq_with_no_answers=False)  # evaluation data should keep all examples
-        sampler = torch.utils.data.distributed.DistributedSampler(dataset) if self.trainer.use_ddp else None
-        dl = DataLoader(dataset, batch_size=1, shuffle=(sampler is None),
+        sampler = torch.utils.data.distributed.DistributedSampler(dataset, shuffle=False) if self.trainer.use_ddp else None
+        dl = DataLoader(dataset, batch_size=1, shuffle=False,
                         num_workers=self.args.num_workers, sampler=sampler,
                         collate_fn=TriviaQADataset.collate_one_doc_and_lists)
         self.val_dataloader_object = dl
@@ -637,7 +684,8 @@ class TriviaQA(pl.LightningModule):
                             help="Number of answer candidates. Used at decoding time")
         parser.add_argument("--max_answer_length", type=int, default=30,
                             help="maximum num of wordpieces/answer. Used at decoding time")
-        parser.add_argument("--regular_softmax_loss", action='store_true', help="IF true, use regular softmax. Default is using ORed softmax loss")
+        parser.add_argument("--regular_softmax_loss", action='store_true',
+                            help="IF true, use regular softmax. Default is using ORed softmax loss")
         parser.add_argument("--test", action='store_true', help="Test only, no training")
         parser.add_argument("--model_path", type=str, required=True,
                             help="Path to the checkpoint directory")
@@ -645,7 +693,7 @@ class TriviaQA(pl.LightningModule):
         parser.add_argument("--attention_mode", type=str, choices=['tvm', 'sliding_chunks'],
                             default='sliding_chunks', help='Which implementation of selfattention to use')
         parser.add_argument("--fp32", action='store_true', help="default is fp16. Use --fp32 to switch to fp32")
-        # parser.add_argument("--seq2seq", action='store_true', help="Use an answer generation model")
+        parser.add_argument("--seq2seq", action='store_true', help="Use an answer generation model")
 
         return parser
 
@@ -684,6 +732,7 @@ def main(args):
                          replace_sampler_ddp=False,
                          accumulate_grad_batches=args.batch_size,
                          val_check_interval=args.val_every,
+                         # check_val_every_n_epoch=2,
                          val_percent_check=args.val_percent_check,
                          test_percent_check=args.val_percent_check,
                          logger=logger if not args.disable_checkpointing else False,
