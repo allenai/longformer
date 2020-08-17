@@ -13,17 +13,27 @@ from longformer import LongformerEncoderDecoderForConditionalGeneration
 model = LongformerEncoderDecoderForConditionalGeneration.from_pretrained(downloaded_checkpoint, gradient_checkpointing=True)
 ```
 
+**\*\*\*\*\* New June 29th, 2020: Easier to use Gradient checkpointing \*\*\*\*\***
+
+Gradient checkpointing has been released with huggingface/transformers [release v3.0.0](https://github.com/huggingface/transformers/tree/v3.0.0). Gradient checkpointing reduces memory by 5x which makes it possible to process longer sequences on smaller GPUs. To use, try something like the following:
+
+```
+from transformers import LongformerModel
+model = LongformerModel.from_pretrained('allenai/longformer-base-4096', gradient_checkpointing=True)
+```
+
 **\*\*\*\*\* New June 2nd, 2020: Integrating with Huggingface + Train your own long model + Gradient checkpointing \*\*\*\*\***
 
 1. `Longformer` is now integrated in the huggingface/transformers [release v2.11.0](https://github.com/huggingface/transformers/tree/v2.11.0). Now you can do
 ```
-model = AutoModel.from_pretrained("allenai/longformer-base-4096")
+from transformers import LongformerModel
+model = LongformerModel.from_pretrained("allenai/longformer-base-4096")
 ```
 The release also includes `LongformerForQA` and other `LongformerForTaskName` with automatic setting of global attention.
 
 2. We added a [notebook](https://colab.research.google.com/github/allenai/longformer/blob/master/scripts/convert_model_to_long.ipynb) to show how to convert an existing pretrained model into its "long" version. 
 
-3. Gradient checkpointing is in progress ([check PR](https://github.com/huggingface/transformers/pull/4659)), but in the  meantime, you can use this branch https://github.com/ibeltagy/transformers/tree/grad_checkpointing. Gradient checkpointing can reduce memory usage significanlty (5x for `longformer-base-4096`) allowing longer sequences on smaller gpus. 
+3. Gradient checkpointing has been merged into HF master ([check PR](https://github.com/huggingface/transformers/pull/4659)). Gradient checkpointing can reduce memory usage significanlty (5x for `longformer-base-4096`) allowing longer sequences on smaller gpus. 
 
 
 **\*\*\*\*\* New April 27th, 2020: A PyTorch implementation of the sliding window attention  \*\*\*\*\***
