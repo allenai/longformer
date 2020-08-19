@@ -10,12 +10,14 @@ import time
 import torch
 from transformers import AutoTokenizer, AutoModelForMaskedLM
 from transformers import DataCollatorForLanguageModeling
+import multiprocessing
 
 import functools
 import pathlib
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+logging.getLogger("transformers.tokenization_utils_base").setLevel(logging.ERROR)  # suppress tokenization length errors
 
 
 try:
@@ -32,16 +34,19 @@ except ImportError:
 else:
     TF_AVAILABLE = True
 
-import tensorflow as tf
-
 
 tokenizer = None  # will be loaded later
 
 # ========================= preprocessing code ========================= #
 def _process_file(full_fname, args):
-    global tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, model_max_length=args.seq_len)  # use_fast should be false for multiprocessing
     "Step 1: tokenize an input text file then save token ids into `np.memmap` shards of size `args.shard_size`"
     fname = full_fname.split('/')[-1]
+    if args.num_workers > 1:
+        current = multiprocessing.current_process()
+        process_identity = int(current._identity[0])
+    else:
+        process_identity = 1
 
     logging.info(f'Processing {full_fname} ...')
     if args.tfrecord:
@@ -92,7 +97,7 @@ def _process_file(full_fname, args):
         tokens_count += len(token_list)
         _write_shard()
     else:  # the input file is tfrecord format of the c4 dataset
-        for raw_example in tqdm(iter(fin)):
+        for raw_example in tqdm(iter(fin), disable=process_identity != 1):
             parsed = tf.train.Example.FromString(raw_example.numpy())
             feature_keys = set(parsed.features.feature.keys())
             if 'text' in feature_keys:
@@ -110,6 +115,7 @@ def _process_file(full_fname, args):
 
     with open(log_filename, 'w') as f:
         f.write(f'Generated {tokens_count} tokens in {shard_count + 1} shards')
+
 
 def _combine_shards(output_fname, shards_list):
     "Step 2: combining memmap shards into one `train.bin` or `val.bin` file"
@@ -144,11 +150,11 @@ def raw_text_to_mmap(args):
         >>> python scripts/pretrain.py --input_dir dirWithTextFiles --train_dev_split 0.05  \
                                         --shard_size  268435456  --num_workers 16
     """
-    global tokenizer
+    # global tokenizer
     pathlib.Path(args.output_dir).mkdir(parents=True, exist_ok=True)
-    if tokenizer is None:
-        tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, use_fast=True)
-    assert len(tokenizer) < 65535  # will use uint16 to store token ids
+    # if tokenizer is None:
+    #     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, use_fast=True)
+    # assert len(tokenizer) < 65535  # will use uint16 to store token ids
 
     all_files = glob.glob(f'{args.input_files}')
 
@@ -190,7 +196,6 @@ def raw_text_to_mmap(args):
         _combine_shards(f'{args.output_dir}/val.bin', val_shards)
         _combine_shards(f'{args.output_dir}/train.bin', train_shards)
 
-    del tokenizer
 # ========================= end preprocessing code ========================= #
 
 def add_args(parser):
@@ -201,6 +206,7 @@ def add_args(parser):
     parser.add_argument("--train_dev_split", type=float, default=0.05)
     parser.add_argument("--shard_size", type=int, default=1024 ** 3 // 4)  # 250MB
     parser.add_argument("--num_workers", type=int, default=1)
+    parser.add_argument("--seq_len", type=int, default=512)
     # Used only at the training phase
 
     # HF model loading
