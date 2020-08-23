@@ -312,6 +312,7 @@ class TriviaQA(pl.LightningModule):
         elif 'bart' in self.args.model_path and 'large' in self.args.model_path:
             config = AutoConfig.from_pretrained(self.args.model_path)
             config.attention_dropout = 0.1
+            config.gradient_checkpointing = True
             model = AutoModel.from_pretrained(self.args.model_path, config=config)
         else:
             model = AutoModel.from_pretrained(self.args.model_path)
@@ -647,7 +648,7 @@ class TriviaQA(pl.LightningModule):
         model = LightningDistributedDataParallel(
             model,
             device_ids=device_ids,
-            find_unused_parameters=True
+            find_unused_parameters=False
         )
         return model
 
