@@ -131,3 +131,46 @@ def pad_to_window_size(input_ids: torch.Tensor, attention_mask: torch.Tensor,
     input_ids = F.pad(input_ids, (0, padding_len), value=pad_token_id)
     attention_mask = F.pad(attention_mask, (0, padding_len), value=False)  # no attention on the padding tokens
     return input_ids, attention_mask
+
+
+# ========= "sliding_chunks_no_overlap": alternative implemenation of the sliding window attention =========
+# This implementation uses non-overlapping chunks (or blocks) of size `w` with number of local attention = 3xw
+# To make this implemenation comparable to "sliding_chunks" set w such that
+#       w_of_sliding_chunks_no_overlap = w_of_sliding_chunks * 2 / 3
+# For example,
+#    w_of_sliding_chunks = 256 (this is one sided. Total attention size = 512)
+#    w_of_sliding_chunks_no_overlap = 170 (Total attention size = 510)
+# Performance:
+# - Speed: 30% faster than "sliding_chunks"
+# - Memory: 95% of the memory usage of "sliding_chunks"
+# The windows are asymmetric where number of attention on each side of a token ranges between w to 2w
+# while "sliding_chunks" has a symmetric window around each token.
+
+
+def sliding_chunks_no_overlap_matmul_qk(q: torch.Tensor, k: torch.Tensor, w: int, padding_value: float):
+    bsz, seqlen, num_heads, head_dim = q.size()
+    assert seqlen % w == 0
+    assert q.size() == k.size()
+    # chunk seqlen into non-overlapping chunks of size w
+    chunk_q = q.view(bsz, seqlen // w, w, num_heads, head_dim)
+    chunk_k = k.view(bsz, seqlen // w, w, num_heads, head_dim)
+    chunk_k_expanded = torch.stack((
+        F.pad(chunk_k[:, :-1], (0, 0, 0, 0, 0, 0, 1, 0), value=0.0),
+        chunk_k,
+        F.pad(chunk_k[:, 1:], (0, 0, 0, 0, 0, 0, 0, 1), value=0.0),
+    ), dim=-1)
+    diagonal_attn = torch.einsum('bcxhd,bcyhde->bcxhey', (chunk_q, chunk_k_expanded))  # multiply
+    return diagonal_attn.reshape(bsz, seqlen, num_heads, 3 * w)
+
+
+def sliding_chunks_no_overlap_matmul_pv(prob: torch.Tensor, v: torch.Tensor, w: int):
+    bsz, seqlen, num_heads, head_dim = v.size()
+    chunk_prob = prob.view(bsz, seqlen // w, w, num_heads, 3, w)
+    chunk_v = v.view(bsz, seqlen // w, w, num_heads, head_dim)
+    chunk_v_extended = torch.stack((
+        F.pad(chunk_v[:, :-1], (0, 0, 0, 0, 0, 0, 1, 0), value=0.0),
+        chunk_v,
+        F.pad(chunk_v[:, 1:], (0, 0, 0, 0, 0, 0, 0, 1), value=0.0),
+    ), dim=-1)
+    context = torch.einsum('bcwhpd,bcdhep->bcwhe', (chunk_prob, chunk_v_extended))
+    return context.reshape(bsz, seqlen, num_heads, head_dim)
