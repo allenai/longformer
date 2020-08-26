@@ -9,7 +9,7 @@ import torch
 from torch.optim.lr_scheduler import LambdaLR
 
 from torch.utils.data import DataLoader, Dataset
-from transformers import RobertaTokenizer, AutoModel, AutoConfig
+from transformers import RobertaTokenizer, AutoModel, AutoConfig, AutoModelWithLMHead
 from scripts.triviaqa_utils import evaluation_utils
 
 import pytorch_lightning as pl
@@ -308,12 +308,18 @@ class TriviaQA(pl.LightningModule):
             config.encoder_attention_heads = 12
             config.decoder_attention_heads = 12
             config.attention_dropout = 0.1
-            model = AutoModel.from_pretrained(self.args.model_path, config=config)
+            if self.args.seq2seq:
+                model = AutoModelWithLMHead.from_pretrained(self.args.model_path, config=config)
+            else:
+                model = AutoModel.from_pretrained(self.args.model_path, config=config)
         elif 'bart' in self.args.model_path and 'large' in self.args.model_path:
             config = AutoConfig.from_pretrained(self.args.model_path)
             config.attention_dropout = 0.1
             config.gradient_checkpointing = True
-            model = AutoModel.from_pretrained(self.args.model_path, config=config)
+            if self.args.seq2seq:
+                model = AutoModelWithLMHead.from_pretrained(self.args.model_path, config=config)
+            else:
+                model = AutoModel.from_pretrained(self.args.model_path, config=config)
         else:
             model = AutoModel.from_pretrained(self.args.model_path)
 
@@ -353,9 +359,20 @@ class TriviaQA(pl.LightningModule):
         elif self.args.model_path in ['bart.large', 'bart.base']:
             sequence_output = self.model.extract_features(input_ids)
         else:
-            sequence_output = self.model(
-                    input_ids,
-                    attention_mask=attention_mask)[0]
+            if self.args.seq2seq:
+                decoder_input_ids = answer_token_ids[:, 0, :-1].clone()
+                decoder_input_ids[decoder_input_ids == self.tokenizer.eos_token_id] = self.tokenizer.pad_token_id
+                decoder_attention_mask = (decoder_input_ids != self.tokenizer.pad_token_id)
+                labels = answer_token_ids[:, 0, 1:].contiguous()
+                loss = self.model(
+                        input_ids,
+                        attention_mask=attention_mask,
+                        decoder_input_ids=decoder_input_ids,
+                        decoder_attention_mask=decoder_attention_mask,
+                        labels=labels)[0]
+                return [loss]
+            else:
+                sequence_output = self.model(input_ids, attention_mask=attention_mask)[0]
 
         logits = self.qa_outputs(sequence_output)
         start_logits, end_logits = logits.split(1, dim=-1)
@@ -436,6 +453,8 @@ class TriviaQA(pl.LightningModule):
     def validation_step(self, batch, batch_nb):
         input_ids, input_mask, segment_ids, subword_starts, subword_ends, answer_token_ids, qids, aliases = batch
         output = self.forward(input_ids, input_mask, segment_ids, subword_starts, subword_ends, answer_token_ids)
+        if self.args.seq2seq:
+            return {'vloss': output[0]}
         loss, start_logits, end_logits = output[:3]
         answers = self.decode(input_ids, start_logits, end_logits)
 
@@ -517,23 +536,28 @@ class TriviaQA(pl.LightningModule):
 
     def validation_end(self, outputs):
         avg_loss = torch.stack([x['vloss'] for x in outputs]).mean()
-        avg_em = torch.stack([x['vem'] for x in outputs]).mean()
-        string_qids = [item for sublist in outputs for item in sublist['qids']]
-        int_qids = [self.val_dataloader_object.dataset.val_qid_string_to_int_map[qid] for qid in string_qids]
-        answer_scores = [item for sublist in outputs for item in sublist['answer_scores']]
-        f1_scores = [item for sublist in outputs for item in sublist['f1']]
-        em_scores = [item for sublist in outputs for item in sublist['em']]
-        print(f'before sync --> sizes: {len(int_qids)}, {len(answer_scores)}, {len(f1_scores)}, {len(em_scores)}')
+        if not self.args.seq2seq:
+            avg_em = torch.stack([x['vem'] for x in outputs]).mean()
+            string_qids = [item for sublist in outputs for item in sublist['qids']]
+            int_qids = [self.val_dataloader_object.dataset.val_qid_string_to_int_map[qid] for qid in string_qids]
+            answer_scores = [item for sublist in outputs for item in sublist['answer_scores']]
+            f1_scores = [item for sublist in outputs for item in sublist['f1']]
+            em_scores = [item for sublist in outputs for item in sublist['em']]
+            print(f'before sync --> sizes: {len(int_qids)}, {len(answer_scores)}, {len(f1_scores)}, {len(em_scores)}')
         if self.trainer.use_ddp:
             torch.distributed.all_reduce(avg_loss, op=torch.distributed.ReduceOp.SUM)
             avg_loss /= self.trainer.world_size
-            torch.distributed.all_reduce(avg_em, op=torch.distributed.ReduceOp.SUM)
-            avg_em /= self.trainer.world_size
+            if not self.args.seq2seq:
+                torch.distributed.all_reduce(avg_em, op=torch.distributed.ReduceOp.SUM)
+                avg_em /= self.trainer.world_size
 
-            int_qids = self.sync_list_across_gpus(int_qids, avg_loss.device, torch.int)
-            answer_scores = self.sync_list_across_gpus(answer_scores, avg_loss.device, torch.float)
-            f1_scores = self.sync_list_across_gpus(f1_scores, avg_loss.device, torch.float)
-            em_scores = self.sync_list_across_gpus(em_scores, avg_loss.device, torch.int)
+                int_qids = self.sync_list_across_gpus(int_qids, avg_loss.device, torch.int)
+                answer_scores = self.sync_list_across_gpus(answer_scores, avg_loss.device, torch.float)
+                f1_scores = self.sync_list_across_gpus(f1_scores, avg_loss.device, torch.float)
+                em_scores = self.sync_list_across_gpus(em_scores, avg_loss.device, torch.int)
+        if self.args.seq2seq:
+            return {'avg_val_loss': avg_loss, 'log': {'val_loss': avg_loss}, 'progress_bar': {'val_loss': avg_loss}}
+
         print(f'after sync --> sizes: {len(int_qids)}, {len(answer_scores)}, {len(f1_scores)}, {len(em_scores)}')
 
         # Because of having multiple documents per questions, some questions might have multiple corresponding answers
