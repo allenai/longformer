@@ -366,13 +366,15 @@ class TriviaQA(pl.LightningModule):
                 decoder_attention_mask = (decoder_input_ids != self.tokenizer.pad_token_id)
                 labels = answer_token_ids[:, 0, 1:].contiguous()
                 labels[answer_token_ids[:, 0, 1:] == self.tokenizer.pad_token_id] = -100
-                loss = self.model(
+                outputs = self.model(
                         input_ids,
                         attention_mask=attention_mask,
                         decoder_input_ids=decoder_input_ids,
                         decoder_attention_mask=decoder_attention_mask,
-                        labels=labels)[0]
-                return [loss]
+                        labels=labels)
+                loss = outputs[0]
+                logit_scores = outputs[1].softmax(dim=2)[:, :, 0].sum(dim=1)
+                return [loss, logit_scores]
             else:
                 sequence_output = self.model(input_ids, attention_mask=attention_mask)[0]
 
@@ -456,7 +458,23 @@ class TriviaQA(pl.LightningModule):
         input_ids, input_mask, segment_ids, subword_starts, subword_ends, answer_token_ids, qids, aliases = batch
         output = self.forward(input_ids, input_mask, segment_ids, subword_starts, subword_ends, answer_token_ids)
         if self.args.seq2seq:
-            return {'vloss': output[0]}
+            logit_scores = output[1]
+            best_answer_score = logit_scores.max()
+            best_answer_index = logit_scores.argmax().item()
+            generated_ids = self.model.generate(input_ids=input_ids[best_answer_index:best_answer_index + 1],
+                                                attention_mask=input_mask[best_answer_index:best_answer_index + 1],
+                                                use_cache=True,)
+            generated_answer_ids = generated_ids[0]
+            generated_answer_ids[-1] = self.tokenizer.eos_token_id
+            index_of_eos_token = (generated_answer_ids == self.tokenizer.eos_token_id).nonzero()[0, 0].item()
+            generated_answer_ids = generated_answer_ids[1:index_of_eos_token]
+            answer_text = self.tokenizer.decode(generated_answer_ids)
+            f1_score = evaluation_utils.metric_max_over_ground_truths(evaluation_utils.f1_score, answer_text, aliases)
+            em_score = evaluation_utils.metric_max_over_ground_truths(evaluation_utils.exact_match_score, answer_text, aliases)
+            return {'vloss': output[0], 'vem': generated_answer_ids.new_zeros([1]).float(),
+                    'qids': [qids], 'answer_scores': [best_answer_score],
+                    'f1': [f1_score], 'em': [em_score]}
+
         loss, start_logits, end_logits = output[:3]
         answers = self.decode(input_ids, start_logits, end_logits)
 
@@ -538,28 +556,23 @@ class TriviaQA(pl.LightningModule):
 
     def validation_end(self, outputs):
         avg_loss = torch.stack([x['vloss'] for x in outputs]).mean()
-        if not self.args.seq2seq:
-            avg_em = torch.stack([x['vem'] for x in outputs]).mean()
-            string_qids = [item for sublist in outputs for item in sublist['qids']]
-            int_qids = [self.val_dataloader_object.dataset.val_qid_string_to_int_map[qid] for qid in string_qids]
-            answer_scores = [item for sublist in outputs for item in sublist['answer_scores']]
-            f1_scores = [item for sublist in outputs for item in sublist['f1']]
-            em_scores = [item for sublist in outputs for item in sublist['em']]
-            print(f'before sync --> sizes: {len(int_qids)}, {len(answer_scores)}, {len(f1_scores)}, {len(em_scores)}')
+        avg_em = torch.stack([x['vem'] for x in outputs]).mean()
+        string_qids = [item for sublist in outputs for item in sublist['qids']]
+        int_qids = [self.val_dataloader_object.dataset.val_qid_string_to_int_map[qid] for qid in string_qids]
+        answer_scores = [item for sublist in outputs for item in sublist['answer_scores']]
+        f1_scores = [item for sublist in outputs for item in sublist['f1']]
+        em_scores = [item for sublist in outputs for item in sublist['em']]
+        print(f'before sync --> sizes: {len(int_qids)}, {len(answer_scores)}, {len(f1_scores)}, {len(em_scores)}')
         if self.trainer.use_ddp:
             torch.distributed.all_reduce(avg_loss, op=torch.distributed.ReduceOp.SUM)
             avg_loss /= self.trainer.world_size
-            if not self.args.seq2seq:
-                torch.distributed.all_reduce(avg_em, op=torch.distributed.ReduceOp.SUM)
-                avg_em /= self.trainer.world_size
+            torch.distributed.all_reduce(avg_em, op=torch.distributed.ReduceOp.SUM)
+            avg_em /= self.trainer.world_size
 
-                int_qids = self.sync_list_across_gpus(int_qids, avg_loss.device, torch.int)
-                answer_scores = self.sync_list_across_gpus(answer_scores, avg_loss.device, torch.float)
-                f1_scores = self.sync_list_across_gpus(f1_scores, avg_loss.device, torch.float)
-                em_scores = self.sync_list_across_gpus(em_scores, avg_loss.device, torch.int)
-        if self.args.seq2seq:
-            return {'avg_val_loss': avg_loss, 'log': {'val_loss': avg_loss}, 'progress_bar': {'val_loss': avg_loss}}
-
+            int_qids = self.sync_list_across_gpus(int_qids, avg_loss.device, torch.int)
+            answer_scores = self.sync_list_across_gpus(answer_scores, avg_loss.device, torch.float)
+            f1_scores = self.sync_list_across_gpus(f1_scores, avg_loss.device, torch.float)
+            em_scores = self.sync_list_across_gpus(em_scores, avg_loss.device, torch.int)
         print(f'after sync --> sizes: {len(int_qids)}, {len(answer_scores)}, {len(f1_scores)}, {len(em_scores)}')
 
         # Because of having multiple documents per questions, some questions might have multiple corresponding answers
@@ -583,6 +596,9 @@ class TriviaQA(pl.LightningModule):
     def test_step(self, batch, batch_nb):
         input_ids, input_mask, segment_ids, subword_starts, subword_ends, answer_token_ids, qids, aliases = batch
         output = self.forward(input_ids, input_mask, segment_ids, subword_starts, subword_ends, answer_token_ids)
+        if self.args.seq2seq:
+            raise NotImplemented
+
         loss, start_logits, end_logits = output[:3]
         answers = self.decode(input_ids, start_logits, end_logits)
 
@@ -689,7 +705,7 @@ class TriviaQA(pl.LightningModule):
                             help="Number of gpus. 0 for CPU")
         parser.add_argument("--warmup", type=int, default=200, help="Number of warmup steps")
         parser.add_argument("--lr", type=float, default=0.0001, help="Maximum learning rate")
-        parser.add_argument("--val_every", type=float, default=0.2, help="Number of training steps between validations")
+        parser.add_argument("--val_every", type=float, default=0.5, help="Number of training steps between validations")
         parser.add_argument("--val_percent_check", default=1.00, type=float, help='Percent of validation data used')
         parser.add_argument("--num_workers", type=int, default=4, help="Number of data loader workers")
         parser.add_argument("--seed", type=int, default=1234, help="Seed")
