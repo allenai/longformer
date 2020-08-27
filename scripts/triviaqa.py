@@ -290,7 +290,8 @@ class TriviaQA(pl.LightningModule):
         self.tokenizer.model_max_length = self.args.max_seq_len
         self.model = self.load_model()
         self.num_labels = 2
-        self.qa_outputs = torch.nn.Linear(self.model.config.hidden_size, self.num_labels)
+        if not self.args.seq2seq:
+            self.qa_outputs = torch.nn.Linear(self.model.config.hidden_size, self.num_labels)
         self.train_dataloader_object = self.val_dataloader_object = self.test_dataloader_object = None
 
     def load_model(self):
@@ -364,6 +365,7 @@ class TriviaQA(pl.LightningModule):
                 decoder_input_ids[decoder_input_ids == self.tokenizer.eos_token_id] = self.tokenizer.pad_token_id
                 decoder_attention_mask = (decoder_input_ids != self.tokenizer.pad_token_id)
                 labels = answer_token_ids[:, 0, 1:].contiguous()
+                labels[answer_token_ids[:, 0, 1:] == self.tokenizer.pad_token_id] = -100
                 loss = self.model(
                         input_ids,
                         attention_mask=attention_mask,
