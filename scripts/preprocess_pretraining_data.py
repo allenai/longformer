@@ -1,19 +1,20 @@
 import argparse
-import glob
-import os
-import random
-import logging
-import numpy as np
-import math
-from tqdm import tqdm
-import time
-import torch
-from transformers import AutoTokenizer, AutoModelForMaskedLM
-from transformers import DataCollatorForLanguageModeling
-import multiprocessing
-
 import functools
+import glob
+import logging
+import math
+import multiprocessing
+import os
 import pathlib
+import random
+import time
+from builtins import NotImplementedError
+
+import numpy as np
+import torch
+from tqdm import tqdm
+from transformers import (AutoModelForMaskedLM, AutoTokenizer,
+                          DataCollatorForLanguageModeling)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -49,12 +50,14 @@ def _process_file(full_fname, args):
         process_identity = 1
 
     logging.info(f'Processing {full_fname} ...')
-    if args.tfrecord:
+    if args.data_type == 'tfrecord':
         fin = tf.data.TFRecordDataset(full_fname)
         log_filename = f'{args.output_dir}/logs-{fname}.log'
-    else:
+    elif args.data_type == 'raw_text':
         fin = open(full_fname, 'r')
         log_filename = f'{args.output_dir}/logs-{args.shard_size}/{fname}.log'
+    else:
+        raise NotImplementedError
 
     if os.path.isfile(log_filename):
         logging.info(f'Skipping {full_fname} ...')
@@ -69,16 +72,18 @@ def _process_file(full_fname, args):
             return
         if token_list[-1] != tokenizer.sep_token_id:  # handle a rare case
             token_list.append(tokenizer.sep_token_id)
-        if args.tfrecord:
+        if args.data_type == 'tfrecord':
             shared_filename = f'{args.output_dir}/{fname}.bin'
-        else:
+        elif args.data_type == 'raw_text':
             shared_filename = f'{args.output_dir}/shards-{args.shard_size}/{fname}-{shard_count}.bin'
+        else:
+            raise NotImplementedError
         logging.info(f'Writing {len(token_list)} tokens to shared {shared_filename}')
         fp = np.memmap(shared_filename, dtype=np.uint16, mode='w+', shape=len(token_list))
         fp[:] = token_list[:]
         del fp  # flush and close file
 
-    if not args.tfrecord:  # the input file is one doc per line
+    if args.data_type == 'raw_text':  # the input file is one doc per line
         for line in tqdm(fin):
             line = line.strip()
             if line == '':  # drop empty lines
@@ -96,7 +101,8 @@ def _process_file(full_fname, args):
                 token_list.append(tokenizer.sep_token_id)
         tokens_count += len(token_list)
         _write_shard()
-    else:  # the input file is tfrecord format of the c4 dataset
+        fin.close()
+    elif args.data_type == 'tfrecord':  # the input file is tfrecord format of the c4 dataset
         for raw_example in tqdm(iter(fin), disable=process_identity != 1):
             parsed = tf.train.Example.FromString(raw_example.numpy())
             feature_keys = set(parsed.features.feature.keys())
@@ -109,9 +115,8 @@ def _process_file(full_fname, args):
                 tokens_count += len(token_list)
             shard_count += 1
         _write_shard()
-
-    if not args.tfrecord:
-        fin.close()
+    else:
+        raise NotImplementedError
 
     with open(log_filename, 'w') as f:
         f.write(f'Generated {tokens_count} tokens in {shard_count + 1} shards')
@@ -160,7 +165,7 @@ def raw_text_to_mmap(args):
 
     args.input_dir = str(pathlib.Path(args.input_files).parent)
 
-    if not args.tfrecord:
+    if not args.data_type == 'raw_text':
         try:
             os.mkdir(f'{args.output_dir}/shards-{args.shard_size}/')
         except FileExistsError:
@@ -179,7 +184,7 @@ def raw_text_to_mmap(args):
     else:
         [process_fn(f) for f in tqdm(all_files)]
 
-    if not args.tfrecord:  # c4 tfrecords are already sharded
+    if args.data_type == 'raw_text':  # c4 tfrecords are already sharded
         # STEP2: shuffling shards and combining them into train.bin and val.bin files
         all_shards = glob.glob(f'{args.output_dir}/shards-{args.shard_size}/*.bin')
         random.shuffle(all_shards)  # shuffling based on shards not individual lines
@@ -190,7 +195,7 @@ def raw_text_to_mmap(args):
         # update the dataset to read from multiple shards directly
         _combine_shards(f'{args.output_dir}/val.bin', val_shards)
         _combine_shards(f'{args.output_dir}/train.bin', train_shards)
-    else:
+    elif args.data_type == 'tfrecord':
         train_shards = glob.glob(f'{args.output_dir}/*train*.bin')
         val_shards = glob.glob(f'{args.output_dir}/*val*.bin')
         _combine_shards(f'{args.output_dir}/val.bin', val_shards)
@@ -214,6 +219,8 @@ def add_args(parser):
     parser.add_argument("--model", type=str, default='roberta-base')
     parser.add_argument("--tfrecord", action='store_true', default=False, help='the input files are tfrecords (for c4 dataset)')
     parser.add_argument("--add_sep_after_doc", action='store_true', default=False, help='add sep token after document')
+
+    parser.add_argument("--data_type", default='raw_text', choices=['raw_text', 's2', 's2orc', 'tfrecord'])
 
     return parser
 
