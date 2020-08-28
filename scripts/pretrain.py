@@ -271,6 +271,7 @@ class Pretrainer(ptl.LightningModule):
         parser.add_argument("--warmup_steps", type=int, default=1000, help='# warmup grad. updates')
         parser.add_argument("--val_every", type=int, default=1000, help='# training grad. updates between evaluations')
         parser.add_argument("--val_batches", type=int, default=1000, help='# evaluation **batches**')
+        parser.add_argument("--val_percent_check", type=float, default=1.0, help='percentage of evaluation **batches**')
         parser.add_argument("--weight_decay", type=float, default=0.01)
         parser.add_argument("--adam_epsilon", type=float, default=1e-6)
         parser.add_argument("--grad_clip", type=float, default=0)  # TODO: test this with fp16. Likely not working
@@ -302,6 +303,53 @@ class Pretrainer(ptl.LightningModule):
         parser.add_argument("--tpu_core_count", type=int, default=None)
 
         return parser
+
+class MLM_Trainer(ptl.Trainer):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def save_checkpoint(self, filepath):
+        def _do_save(chkpt):
+            # do the actual save
+            try:
+                self._atomic_save(chkpt, filepath)
+            except AttributeError:
+                if 'hparams' in chkpt:
+                    del chkpt['hparams']
+                self._atomic_save(chkpt, filepath)
+
+        checkpoint = self.dump_checkpoint()
+
+        # self._atomic_save has different behavior for XLA vs
+        # non-xla.  In XLA, it has a barrier and internal logic to only
+        # save for rank=0, so need to call for all ranks. For non-XLA,
+        # it doesn't have rank=0 logic so only call for rank = 0
+        if XLA_AVAILABLE:
+            _do_save(checkpoint)
+        elif self.proc_rank == 0:
+            _do_save(checkpoint)
+
+    def _atomic_save(self, checkpoint, filepath: str):
+        """Saves a checkpoint atomically, avoiding the creation of incomplete checkpoints.
+        This will create a temporary checkpoint with a suffix of ``.part``, then copy it to the final location once
+        saving is finished.
+        Args:
+            checkpoint: The object to save.
+                Built to be used with the ``dump_checkpoint`` method, but can deal with anything which ``torch.save``
+                accepts.
+            filepath: The path to which the checkpoint will be saved.
+                This points to the file that the checkpoint will be stored in.
+        """
+        tmp_path = str(filepath) + ".part"
+        if self.use_tpu and XLA_AVAILABLE:
+            xm.save(checkpoint, tmp_path, master_only=True, global_master=True)
+            if xm.is_master_ordinal(local=False):
+                os.replace(tmp_path, filepath)
+        else:
+            torch.save(checkpoint, tmp_path)
+            os.replace(tmp_path, filepath)
+
 
 
 def main(args):
@@ -338,7 +386,7 @@ def main(args):
     )
 
     args.val_every *= args.grad_accum  # PTL is expecting number of batches_per_gpu
-    trainer = ptl.Trainer(
+    trainer = MLM_Trainer(
         gpus=args.gpu_count,
         num_nodes=args.node_count,
         num_tpu_cores=args.tpu_core_count,
@@ -357,7 +405,7 @@ def main(args):
         gradient_clip_val=args.grad_clip,
         precision=16 if args.fp16 else 32, amp_level='O2',
         num_sanity_val_steps=2,
-        val_percent_check=0.1,
+        val_percent_check=args.val_percent_check,
     )
     trainer.fit(pretrainer)
 
