@@ -737,6 +737,8 @@ class TriviaQA(pl.LightningModule):
                             default='sliding_chunks', help='Which implementation of selfattention to use')
         parser.add_argument("--fp32", action='store_true', help="default is fp16. Use --fp32 to switch to fp32")
         parser.add_argument("--seq2seq", action='store_true', help="Use an answer generation model")
+        parser.add_argument("--resume_ckpt", type=str, help="Path of a checkpoint to resume from")
+
 
         return parser
 
@@ -760,14 +762,16 @@ def main(args):
         filepath=os.path.join(args.save_dir, args.save_prefix, "checkpoints"),
         save_top_k=5,
         verbose=True,
-        monitor='avg_val_f1',
-        mode='max',
+        monitor='avg_val_loss',
+        # save_last=True,
+        mode='min',
+        period=-1,
         prefix=''
     )
 
     print(args)
     train_set_size = 110648  # hardcode dataset size. Needed to compute number of steps for the lr scheduler
-    args.steps = args.epochs * train_set_size / (args.batch_size * args.gpus)
+    args.steps = args.epochs * train_set_size / (args.batch_size * max(args.gpus, 1))
     print(f'>>>>>>> #steps: {args.steps}, #epochs: {args.epochs}, batch_size: {args.batch_size * args.gpus} <<<<<<<')
 
     trainer = pl.Trainer(gpus=args.gpus, distributed_backend='ddp' if args.gpus and args.gpus > 1 else None,
@@ -775,6 +779,7 @@ def main(args):
                          replace_sampler_ddp=False,
                          accumulate_grad_batches=args.batch_size,
                          val_check_interval=args.val_every,
+                         num_sanity_val_steps=2,
                          # check_val_every_n_epoch=2,
                          val_percent_check=args.val_percent_check,
                          test_percent_check=args.val_percent_check,
@@ -782,6 +787,7 @@ def main(args):
                          checkpoint_callback=checkpoint_callback if not args.disable_checkpointing else False,
                          show_progress_bar=not args.no_progress_bar,
                          use_amp=not args.fp32, amp_level='O2',
+                         resume_from_checkpoint=args.resume_ckpt,
                          )
     if not args.test:
         trainer.fit(model)
