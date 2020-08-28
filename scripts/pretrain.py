@@ -327,7 +327,7 @@ def main(args):
 
     checkpoint_callback = ModelCheckpoint(
         # model saved to filepath/prefix_....
-        filepath=os.path.join(args.save_dir, args.save_prefix, '{epoch}-{val_loss:.4f}' 'checkpoint'),
+        filepath=os.path.join(args.save_dir, args.save_prefix, 'checkpoint', '{epoch}-{val_loss:.4f}'),
         prefix='',
         save_top_k=3,
         # save_last=True,
