@@ -15,7 +15,7 @@ from transformers.optimization import AdamW, get_linear_schedule_with_warmup
 from torch.utils.data import Dataset, DataLoader
 import pytorch_lightning as ptl
 from pytorch_lightning.logging.test_tube import TestTubeLogger
-from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateLogger
+from longformer.ptl_model_checkpoint import ModelCheckpoint
 
 
 logging.basicConfig(level=logging.INFO)
@@ -130,6 +130,8 @@ class Pretrainer(ptl.LightningModule):
         if self.start_time != 0:
             elapsed_time = time.time() - self.start_time
             tensorboard_logs['second_per_batch'] = elapsed_time
+        #  lr = loss.new_zeros(1) + self.optimizer.param_groups[0]['lr']
+        #  tensorboard_logs['lr'] = lr
         self.start_time = time.time()
         if self.on_gpu:
             tensorboard_logs['memory'] = torch.cuda.memory_allocated(loss.device) / 1024 ** 3
@@ -208,7 +210,8 @@ class Pretrainer(ptl.LightningModule):
         return loader
 
     def train_dataloader(self):
-        return self._get_loader(f'{self.args.input_dir}/train.bin', True)
+        self.train_dataloader_obj = self._get_loader(f'{self.args.input_dir}/train.bin', True)
+        return self.train_dataloader_obj
 
     def val_dataloader(self):
         return self._get_loader(f'{self.args.input_dir}/val.bin', True)
@@ -225,6 +228,12 @@ class Pretrainer(ptl.LightningModule):
             total_norm.add_(param_norm)
         total_norm = (total_norm ** (1.0 / norm_type))
         return {'total_grad_norm': total_norm}
+
+    def on_epoch_start(self):
+        super().on_epoch_start()
+        # this works around a bug in PTL that doesn't set epoch on TPU!
+        if self.use_tpu and hasattr(self.train_dataloader_obj.sampler, 'set_epoch'):
+            self.train_dataloader_obj.sampler.set_epoch(self.current_epoch)
 
     @staticmethod
     def add_args(parser):
@@ -319,9 +328,9 @@ def main(args):
     checkpoint_callback = ModelCheckpoint(
         # model saved to filepath/prefix_....
         filepath=os.path.join(args.save_dir, args.save_prefix, 'checkpoint'),
-        prefix='',
-        save_top_k=1,
-        save_last=True,
+        prefix='{epoch}-{val_loss:.4f}',
+        save_top_k=3,
+        # save_last=True,
         verbose=True,
         monitor='val_loss',
         mode='min',
@@ -348,7 +357,7 @@ def main(args):
         gradient_clip_val=args.grad_clip,
         precision=16 if args.fp16 else 32, amp_level='O2',
         num_sanity_val_steps=2,
-        callbacks=[LearningRateLogger()],
+        val_percent_check=0.1,
     )
     trainer.fit(pretrainer)
 
