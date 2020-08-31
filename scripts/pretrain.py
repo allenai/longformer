@@ -130,7 +130,7 @@ class Pretrainer(ptl.LightningModule):
         if self.start_time != 0:
             elapsed_time = time.time() - self.start_time
             tensorboard_logs['second_per_batch'] = elapsed_time
-        lr = loss.new_zeros(1) + self.trainer.optimizer.param_groups[0]['lr']
+        lr = loss.new_zeros(1) + self.trainer.optimizers[0].param_groups[0]['lr']
         tensorboard_logs['lr'] = lr
         self.start_time = time.time()
         if self.on_gpu:
