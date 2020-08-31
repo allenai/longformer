@@ -130,8 +130,8 @@ class Pretrainer(ptl.LightningModule):
         if self.start_time != 0:
             elapsed_time = time.time() - self.start_time
             tensorboard_logs['second_per_batch'] = elapsed_time
-        #  lr = loss.new_zeros(1) + self.optimizer.param_groups[0]['lr']
-        #  tensorboard_logs['lr'] = lr
+        lr = loss.new_zeros(1) + self.optimizer.param_groups[0]['lr']
+        tensorboard_logs['lr'] = lr
         self.start_time = time.time()
         if self.on_gpu:
             tensorboard_logs['memory'] = torch.cuda.memory_allocated(loss.device) / 1024 ** 3
@@ -319,8 +319,9 @@ class MLM_Trainer(ptl.Trainer):
                     del chkpt['hparams']
                 self._atomic_save(chkpt, filepath)
 
+        logger.info("DEBUG: DUMPING CHKPT")
         checkpoint = self.dump_checkpoint()
-
+        logger.info("CHKPT dumped")
         # self._atomic_save has different behavior for XLA vs
         # non-xla.  In XLA, it has a barrier and internal logic to only
         # save for rank=0, so need to call for all ranks. For non-XLA,
@@ -343,7 +344,10 @@ class MLM_Trainer(ptl.Trainer):
         """
         tmp_path = str(filepath) + ".part"
         if self.use_tpu and XLA_AVAILABLE:
+            print('DEBUG: trying to save checkpoint using xm')
+            xm.rendezvous("saving_optimizer_states")
             xm.save(checkpoint, tmp_path, master_only=True, global_master=True)
+            print('DEBUG: checkpoint saved xm')
             if xm.is_master_ordinal(local=False):
                 os.replace(tmp_path, filepath)
         else:
