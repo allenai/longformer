@@ -1,5 +1,6 @@
 # pytorch-lightning @ git+http://github.com/armancohan/pytorch-lightning.git@0.8.5-fixes-1#egg=pytorch-lightning
-pytorch-lightning @ git+git://github.com/matt-peters/pytorch-lightning.git@0_7_3_shm
+# pytorch-lightning @ git+git://github.com/matt-peters/pytorch-lightning.git@0_7_3_shm
+pytorch-lightning @ git+git://github.com/armancohan/pytorch-lightning.git@0_7_3_shm
 # torch==1.3.1
 transformers==3.0.2
 tensorboardX
