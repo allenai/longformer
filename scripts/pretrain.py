@@ -301,6 +301,7 @@ class Pretrainer(ptl.LightningModule):
         parser.add_argument("--node_count", type=int, default=1,
                             help="Number of nodes. It needs to match --nnodes of torch.distributed.launch")
         parser.add_argument("--tpu_core_count", type=int, default=None)
+        parser.add_argument("--process_spawn_delay", type=int, default=0)
 
         return parser
 
@@ -410,6 +411,7 @@ def main(args):
         precision=16 if args.fp16 else 32, amp_level='O2',
         num_sanity_val_steps=2,
         val_percent_check=args.val_percent_check,
+        process_spawn_delay=args.process_spawn_delay
     )
     trainer.fit(pretrainer)
 
