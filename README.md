@@ -3,7 +3,7 @@
 
 **\*\*\*\*\* Work In Progress: LongformerEncoderDecoder \*\*\*\*\***
 
-A `LongformerEncoderDecoder` model is now available. It is geared towards summarization where the input is long but the output is relatively shorter. The following code snippet loads a `LongformerEncoderDecoder` checkpointing started from `BartLarge`. With gradient checkpointing, fp16, and 48GB gpu, the input length be up to 12K. 
+A `LongformerEncoderDecoder` model is now available. It is geared towards summarization where the input is long but the output is relatively shorter. The following code snippet loads a `LongformerEncoderDecoder` checkpointing started from `BartLarge`. With gradient checkpointing, fp16, and 48GB gpu, the input length be up to 16K. 
 ```
 pip install git+https://github.com/allenai/longformer.git@encoderdecoder  
 
