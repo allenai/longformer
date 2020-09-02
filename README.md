@@ -1,6 +1,7 @@
 # <p align=center>`Longformer`</p>
 `Longformer` is a BERT-like model for long documents.
 
+
 **\*\*\*\*\* Work In Progress: LongformerEncoderDecoder \*\*\*\*\***
 
 A `LongformerEncoderDecoder` model is now available. It is geared towards summarization where the input is long but the output is relatively shorter. The following code snippet loads a `LongformerEncoderDecoder` checkpointing started from `BartLarge`. With gradient checkpointing, fp16, and 48GB gpu, the input length be up to 16K. 
@@ -12,6 +13,11 @@ pip install git+https://github.com/allenai/longformer.git@encoderdecoder
 from longformer import LongformerEncoderDecoderForConditionalGeneration
 model = LongformerEncoderDecoderForConditionalGeneration.from_pretrained(downloaded_checkpoint, gradient_checkpointing=True)
 ```
+
+**\*\*\*\*\* New July 23rd, 2020: Speed degradation \*\*\*\*\***
+
+A significant speed degradation in the hugginface/transformers was recenlty discovered and fixed (check [this PR](https://github.com/huggingface/transformers/pull/5811) for details). To avoid this problem, either use the old [release v2.11.0](https://github.com/huggingface/transformers/tree/v2.11.0) but it doesn't support gradient checkpointing, or use the master branch. This problem should be fixed with the next hugginface/transformers release.
+
 
 **\*\*\*\*\* New June 29th, 2020: Easier to use Gradient checkpointing \*\*\*\*\***
 
