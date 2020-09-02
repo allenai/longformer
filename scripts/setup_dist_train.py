@@ -57,6 +57,40 @@ class DistributedManager:
         output = self.client.run_command(";".join(cmd))
         self._process_output(output)
 
+    def _parallel_shell_scp(self, src_file, dst_dir, hosts, max_parallelism=None):
+        # run a command on hosts in parallel with subprocess
+        # hosts is a list of ip addresses
+        if max_parallelism is None:
+            host_groups = [hosts]
+        else:
+            host_groups = []
+            for start in range(0, len(hosts), max_parallelism):
+                end = start + max_parallelism
+                host_groups.append(hosts[start:end])
+
+        for host_group in host_groups:
+            processes = []
+            for host in host_group:
+                ssh_cmd = [
+                    "scp",
+                    "-i", self.private_key,
+                    "-oStrictHostKeyChecking=no",
+                    src_file,
+                    f"{host}:{dst_dir}"
+                ]
+                process = subprocess.Popen(
+                    ' '.join(ssh_cmd), shell=True,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                )
+                processes.append([process, host])
+
+            for process, host in processes:
+                process.wait()
+                stdout, stderr = process.communicate()
+                print("-" * 40 + " " + host)
+                print(stdout.decode('utf-8'))
+                print(stderr.decode('utf-8'))
+
     def _parallel_shell_ssh(self, cmd, hosts, max_parallelism=None):
         # run a command on hosts in parallel with subprocess
         # hosts is a list of ip addresses
@@ -86,29 +120,55 @@ class DistributedManager:
                 processes.append([process, host])
 
             for process, host in processes:
-                process.wait()
+                ## Note This will deadlock when using stdout=PIPE or stderr=PIPE and the child process generates enough 
+                # output to a pipe such that it blocks waiting for the OS pipe buffer to accept more data.
+                #  Use Popen.communicate() when using pipes to avoid that.
+                # process.communicate()
                 stdout, stderr = process.communicate()
                 print("-" * 40 + " " + host)
                 print(stdout.decode('utf-8'))
                 print(stderr.decode('utf-8'))
 
-    def deploy_branch(self, branch, code_dir="/home/armanc/code/longformer"):
+    def deploy_branch(self, branch='trainer', code_dir="/home/armanc/longformer"):
         # use a shell command to deploy to work around agent forwarding
         # issues with ssh2-python
         # assumes conda env is called torch-xla-nightly
         cmd = [
             "cd {}".format(code_dir),
-            # "git checkout master",
-            # "git pull",
-            # "git checkout {}".format(branch),
-            # "git pull origin {}".format(branch),
+            "git fetch",
+            "git checkout master",
+            "git reset --hard origin/master",
+            "git pull",
+            "git checkout {}".format(branch),
+            f"git reset --hard origin/{branch}",
+            # f"git checkout origin/{branch} requirements.txt",
+            # f"git checkout origin/{branch} longformer/ptl_model_checkpoint.py",
+            # f"git checkout origin/{branch} scripts/pretrain.py",
+            "git pull origin {}".format(branch),
             "source /anaconda3/bin/activate torch-xla-nightly",
-
+            "pip install -r requirements.txt --upgrade",
             # "wget https://ai2-s2-research.s3-us-west-2.amazonaws.com/longformer/longformer-base-4096.tar.gz",
             # "tar -xvf longformer-base-4096",
             # "wget https://ai2-s2-research.s3-us-west-2.amazonaws.com/longformer/longformer-large-4096.tar.gz",
             # "tar -xvf longformer-large-4096",
-            # "python setup.py install"
+            "python setup.py install",
+            "echo '*** DONE *** '"
+        ]
+        self._parallel_shell_ssh(cmd, self.hosts)
+
+    def create_model_disk_dir(self):
+        """ just create the directory """
+        cmd = [
+            "echo `creating model dirs`...",
+            "sudo mkdir -p /mnt/disk-models/",
+            "sudo chmod a+w /mnt/disk-models/",
+        ]
+        self._parallel_shell_ssh(cmd, self.hosts)
+
+    def get_mem_usage(self):
+        """ just create the directory """
+        cmd = [
+            "free -m"
         ]
         self._parallel_shell_ssh(cmd, self.hosts)
 
@@ -139,19 +199,23 @@ class DistributedManager:
         output = self.client.run_command(";".join(cmd))
         self._process_output(output)
 
-    def mount_model_disk(self):
-        self.mount_disk("/mnt/disks/matthewp_vision_disk", "sdb")
+    def mount_model_disk(self, sb_loc="sdd"):
+        # self.mount_disk("/mnt/disk-models/", sb_loc)
 
         cmd = [
             # first line so other nodes can write out logging that is ignored
-            "sudo mkdir -p /mnt/models-disk/",
-            "sudo chmod a+w /mnt/models-disk/",
+            "sudo mkdir -p /mnt/disk-models/",
+            "sudo chmod a+w /mnt/disk-models/",
             # "sudo mkdir -p /mnt/disks/matthewp_vision_disk",
             # "sudo chmod a+w /mnt/disks/matthewp_vision_disk",
-            # "sudo mount -o discard,defaults /dev/sdb /mnt/disks/matthewp_vision_disk"
+            f'echo "Got /dev/{sb_loc} for mounting"',
+            f"sudo mount -o discard,defaults /dev/{sb_loc} /mnt/disk-models/"
         ]
-        output = self.client.run_command(";".join(cmd))
-        self._process_output(output)
+        # output = self.client.run_command(";".join(cmd))
+        from pssh.clients import ParallelSSHClient
+        head_node_client = ParallelSSHClient([self.hosts[0]], pkey=self.private_key)
+        output = head_node_client.run_command(";".join(cmd))        
+        self._process_output(output, [self.hosts[0]])
 
     def mount_matthewp_models_head_node(self):
         # first attach the disk to the head mode
@@ -163,9 +227,9 @@ class DistributedManager:
             "sudo lsblk",
             'sb_loc=`sudo lsblk | grep 200G | cut -f 1 -d " "`',
             'echo "Got $sb_loc for mounting"',
-            "sudo mkdir -p /mnt/models-disk/",
-            "sudo chmod ugo+w /mnt/models-disk",
-            "sudo mount -o discard,defaults /dev/$sb_loc /mnt/models-disk/",
+            "sudo mkdir -p /mnt/disk-models/",
+            "sudo chmod ugo+w /mnt/disk-models",
+            "sudo mount -o discard,defaults /dev/$sb_loc /mnt/disk-models/",
             "sudo apt-get -y install dstat"
         ]
 
@@ -178,11 +242,42 @@ class DistributedManager:
         #   then can write out logging that is ignored... PTL "quirks")
         cmd = [
             # first line so other nodes can write out logging that is ignored
-            "sudo mkdir -p /mnt/models-disk",
-            "sudo chmod a+w /mnt/models-disk",
+            "sudo mkdir -p /mnt/disk-models",
+            "sudo chmod a+w /mnt/disk-models",
         ]
         output = self.client.run_command(";".join(cmd))
         self._process_output(output)
+
+    def attach_disk(self, disk_name):
+        # attach disk_name to all nodes
+        num_instances_in_group = len(self.hosts)
+        cmd_get_insts_in_group = f'gcloud compute instance-groups list-instances {self.group} --zone europe-west4-a | grep {self.group} | tail -n {num_instances_in_group} | cut -f 1 -d " "'
+        completed = subprocess.run(cmd_get_insts_in_group, shell=True, stdout=subprocess.PIPE)
+        node_names = [e.strip() for e in completed.stdout.decode('utf-8').strip().split('\n')]
+
+        # now attach the disk
+        from tqdm.auto import tqdm
+        for node in tqdm(node_names, desc='attaching disks'):
+            cmd = f"gcloud compute instances attach-disk {node} --disk {disk_name} --zone europe-west4-a --mode='ro'"
+            print("Running {}".format(cmd))
+            completed = subprocess.run(cmd, shell=True)
+
+
+    def mount_disk_identify_by_size(self, disk_size=100, mount_point='/mnt/disk-pretrained-models/'):
+        " assumes disk_size is unique identifier"
+        cmd = [
+            # get the sb* location for mounting
+            "sudo lsblk",
+            f'sb_loc=`sudo lsblk | grep {disk_size}G | cut -f 1 -d " "`',
+            'echo "Got $sb_loc for mounting"',
+            f"sudo mkdir -p {mount_point}",
+            f"sudo chmod ugo+w {mount_point}",
+            f"sudo mount -o ro /dev/$sb_loc {mount_point}",
+            "sudo apt-get -y install dstat"
+        ]
+        output = self.client.run_command(";".join(cmd))
+        self._process_output(output)
+
 
     def attach_matthewp_models_head_node(self):
         # get the head node name and attach the disk
@@ -194,6 +289,9 @@ class DistributedManager:
         cmd = "gcloud compute instances attach-disk {} --disk armanc-models1 --zone europe-west4-a".format(head_node_name)
         print("Running {}".format(cmd))
         completed = subprocess.run(cmd, shell=True)
+
+    def copy_file(self, file_path, dest_dir):
+        self._parallel_shell_scp(file_path, dest_dir, self.hosts)
 
     def copy_file_head_node_other_nodes(self, file_dir, file_name):
         # copy a file in file_dir/file_name from the head node to all other nodes
@@ -222,6 +320,8 @@ class DistributedManager:
         for host in hosts:
             response = output[host]
             print("-" * 40 + " " + host)
+            print(response)
+            print("----")
             if response.exit_code != 0:
                 print("FAILED!")
                 n_failed += 1
@@ -283,10 +383,10 @@ if __name__ == '__main__':
 
     manager = DistributedManager(args.group, args.key)
 
-    # manager.deploy_branch('tpu2')
+    manager.deploy_branch(branch='trainer')
     # manager.mount_model_disk()
-    # manager.mount_matthewp_models_head_node()
+    manager.mount_matthewp_models_head_node()
 #    manager.upgrade_transformers()
-    manager.copy_file_head_node_other_nodes('/home/armanc/code/longformer/', 'xla_distributed.py') 
+    # manager.copy_file_head_node_other_nodes('/home/armanc/code/longformer/', 'xla_distributed.py') 
 #    manager.increase_ulimit_a()
 
