@@ -14,6 +14,8 @@ from pytorch_lightning.logging import TestTubeLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.overrides.data_parallel import LightningDistributedDataParallel
 
+from rouge_score import rouge_scorer
+
 
 class SummarizationDataset(Dataset):
     def __init__(self, hf_dataset, tokenizer, max_output_len):
@@ -26,7 +28,7 @@ class SummarizationDataset(Dataset):
 
     def __getitem__(self, idx):
         entry = self.hf_dataset[idx]
-        input_ids = self.tokenizer.encode(entry['article'], truncation=True)
+        input_ids = self.tokenizer.encode(entry['article'], truncation=True, max_length=self.max_input_len)
         output_ids = self.tokenizer.encode(entry['abstract'], truncation=True, max_length=self.max_output_len)
         return torch.tensor(input_ids), torch.tensor(output_ids)
 
@@ -48,7 +50,6 @@ class Summarizer(pl.LightningModule):
         self.tokenizer = AutoTokenizer.from_pretrained(self.args.tokenizer, use_fast=True)
         self.model = AutoModelForSeq2SeqLM.from_pretrained(self.args.model_path)
         self.train_dataloader_object = self.val_dataloader_object = self.test_dataloader_object = None
-        self.rouge = None
 
     def forward(self, input_ids, output_ids):
         attention_mask = torch.ones(input_ids.shape, dtype=torch.long, device=input_ids.device)
@@ -87,13 +88,21 @@ class Summarizer(pl.LightningModule):
                                             max_length=self.args.max_output_len)
         generated_str = self.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
         gold_str = self.tokenizer.batch_decode(output_ids, skip_special_tokens=True)
-        if self.rouge is None:
-            self.rouge = nlp.load_metric("rouge")
-        rouge_scores = self.rouge.compute(predictions=generated_str, references=gold_str, rouge_types=['rouge2', 'rouge1', 'rougeL'])
+        scorer = rouge_scorer.RougeScorer(rouge_types=['rouge1', 'rouge2', 'rougeL'], use_stemmer=False)
+        rouge1 = rouge2 = rougel = 0.0
+        for ref, pred in zip(gold_str, generated_str):
+            score = scorer.score(ref, pred)
+            rouge1 += score['rouge1'].fmeasure
+            rouge2 += score['rouge2'].fmeasure
+            rougel += score['rougeL'].fmeasure
+        rouge1 /= len(generated_str)
+        rouge2 /= len(generated_str)
+        rougel /= len(generated_str)
+
         return {'vloss': vloss,
-                'rouge1': vloss.new_zeros(1) + rouge_scores['rouge1'].mid.fmeasure,
-                'rouge2': vloss.new_zeros(1) + rouge_scores['rouge2'].mid.fmeasure,
-                'rougeL': vloss.new_zeros(1) + rouge_scores['rougeL'].mid.fmeasure}
+                'rouge1': vloss.new_zeros(1) + rouge1,
+                'rouge2': vloss.new_zeros(1) + rouge2,
+                'rougeL': vloss.new_zeros(1) + rougel, }
 
     def validation_epoch_end(self, outputs):
         names = ['vloss', 'rouge1', 'rouge2', 'rougeL']
@@ -108,7 +117,11 @@ class Summarizer(pl.LightningModule):
         return {'avg_val_loss': logs['vloss'], 'log': logs, 'progress_bar': logs}
 
     def test_step(self, batch, batch_nb):
-        raise NotImplementedError
+        return self.validation_step(batch, batch_nb)
+
+    def test_epoch_end(self, outputs):
+        result = self.validation_epoch_end(outputs)
+        print(result)
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.model.parameters(), lr=self.args.lr)
@@ -171,6 +184,8 @@ class Summarizer(pl.LightningModule):
         parser.add_argument("--epochs", type=int, default=5, help="Number of epochs")
         parser.add_argument("--disable_checkpointing", action='store_true', help="No logging or checkpointing")
         parser.add_argument("--max_output_len", type=int, default=256,
+                            help="maximum num of wordpieces/summary. Used for training and testing")
+        parser.add_argument("--max_input_len", type=int, default=512,
                             help="maximum num of wordpieces/summary. Used for training and testing")
         parser.add_argument("--test", action='store_true', help="Test only, no training")
         parser.add_argument("--model_path", type=str, default='facebook/bart-base',
