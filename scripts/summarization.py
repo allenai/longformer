@@ -121,10 +121,10 @@ class Summarizer(pl.LightningModule):
         )
         return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
 
-    def _get_dataloader(self, current_dataloader, hf_dataset, is_train):
+    def _get_dataloader(self, current_dataloader, split_name, is_train):
         if current_dataloader is not None:
             return current_dataloader
-        dataset = SummarizationDataset(hf_dataset=hf_dataset, tokenizer=self.tokenizer, max_output_len=self.args.max_output_len)
+        dataset = SummarizationDataset(hf_dataset=self.hf_datasets[split_name], tokenizer=self.tokenizer, max_output_len=self.args.max_output_len)
         sampler = torch.utils.data.distributed.DistributedSampler(dataset, shuffle=is_train) if self.trainer.use_ddp else None
         return DataLoader(dataset, batch_size=self.args.batch_size, shuffle=(sampler is None),
                           num_workers=self.args.num_workers, sampler=sampler,
@@ -132,24 +132,18 @@ class Summarizer(pl.LightningModule):
 
     @pl.data_loader
     def train_dataloader(self):
-        if self.hf_datasets is None:
-            self.hf_datasets = nlp.load_dataset('scientific_papers', 'arxiv')
-        self.train_dataloader_object = self._get_dataloader(self.train_dataloader_object, self.hf_datasets['train'], is_train=True)
+        self.train_dataloader_object = self._get_dataloader(self.train_dataloader_object, 'train', is_train=True)
         return self.train_dataloader_object
 
     @pl.data_loader
     def val_dataloader(self):
-        if self.hf_datasets is None:
-            self.hf_datasets = nlp.load_dataset('scientific_papers', 'arxiv')
-        dataset_split = 'validation' if not self.args.debug else 'train'
-        self.val_dataloader_object = self._get_dataloader(self.val_dataloader_object, self.hf_datasets[dataset_split], is_train=False)
+        split_name = 'validation' if not self.args.debug else 'train'
+        self.val_dataloader_object = self._get_dataloader(self.val_dataloader_object, split_name, is_train=False)
         return self.val_dataloader_object
 
     @pl.data_loader
     def test_dataloader(self):
-        if self.hf_datasets is None:
-            self.hf_datasets = nlp.load_dataset('scientific_papers', 'arxiv')
-        self.test_dataloader_object = self._get_dataloader(self.test_dataloader_object, self.hf_datasets['test'], is_train=False)
+        self.test_dataloader_object = self._get_dataloader(self.test_dataloader_object, 'test', is_train=False)
         return self.test_dataloader_object
 
     def configure_ddp(self, model, device_ids):
@@ -198,6 +192,7 @@ def main(args):
         torch.cuda.manual_seed_all(args.seed)
 
     model = Summarizer(args)
+    model.hf_datasets = nlp.load_dataset('scientific_papers', 'arxiv')
 
     logger = TestTubeLogger(
         save_dir=args.save_dir,
@@ -216,10 +211,10 @@ def main(args):
     )
 
     print(args)
-    model.hf_datasets = nlp.load_dataset('scientific_papers', 'arxiv')
+
     args.dataset_size = 203037  # hardcode dataset size. Needed to compute number of steps for the lr scheduler
 
-    trainer = pl.Trainer(gpus=args.gpus, distributed_backend='ddp' if args.gpus and args.gpus > 1 else None,
+    trainer = pl.Trainer(gpus=args.gpus, distributed_backend='ddp',
                          track_grad_norm=-1,
                          max_epochs=args.epochs if not args.debug else 100,
                          replace_sampler_ddp=False,
