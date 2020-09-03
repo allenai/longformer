@@ -8,13 +8,15 @@ from torch.utils.data import DataLoader, Dataset
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 from transformers.optimization import get_linear_schedule_with_warmup
 import nlp
+from rouge_score import rouge_scorer
 
 import pytorch_lightning as pl
 from pytorch_lightning.logging import TestTubeLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.overrides.data_parallel import LightningDistributedDataParallel
 
-from rouge_score import rouge_scorer
+from longformer import LongformerEncoderDecoderForConditionalGeneration
+from longformer.sliding_chunks import pad_to_window_size
 
 
 class SummarizationDataset(Dataset):
@@ -49,16 +51,26 @@ class Summarizer(pl.LightningModule):
         self.args = args
         self.hparams = args
         self.tokenizer = AutoTokenizer.from_pretrained(self.args.tokenizer, use_fast=True)
-        self.model = AutoModelForSeq2SeqLM.from_pretrained(self.args.model_path)
+        if 'long' in self.args.model_path:
+            # TODO: remember to set attention_dropout = 0.1
+            self.model = LongformerEncoderDecoderForConditionalGeneration.from_pretrained(
+                self.args.model_path, gradient_checkpointing=self.args.grad_ckpt,)
+        else:
+            self.model = AutoModelForSeq2SeqLM.from_pretrained(self.args.model_path)
         self.train_dataloader_object = self.val_dataloader_object = self.test_dataloader_object = None
 
     def forward(self, input_ids, output_ids):
         attention_mask = torch.ones(input_ids.shape, dtype=torch.long, device=input_ids.device)
         attention_mask[input_ids == self.tokenizer.pad_token_id] = 0
+        if isinstance(self.model, LongformerEncoderDecoderForConditionalGeneration):
+            attention_mask[:, 0] = 2  # global attention on one token for all model params to be used, which is important for gradient checkpointing to work
+            input_ids, attention_mask = pad_to_window_size(  # ideally, should be moved inside the LongformerModel
+                input_ids, attention_mask, self.model.config.attention_window[0], self.tokenizer.pad_token_id)
         decoder_input_ids = output_ids[:, :-1]
         decoder_attention_mask = (decoder_input_ids != self.tokenizer.pad_token_id)
         labels = output_ids[:, 1:].clone()
         labels[labels == self.tokenizer.pad_token_id] = -100
+
         outputs = self.model(
                 input_ids,
                 attention_mask=attention_mask,
@@ -129,7 +141,7 @@ class Summarizer(pl.LightningModule):
         if self.args.debug:
             return optimizer  # const LR
         num_gpus = torch.cuda.device_count()
-        num_steps = self.args.dataset_size * self.args.epochs / num_gpus / self.args.grad_accum
+        num_steps = self.args.dataset_size * self.args.epochs / num_gpus / self.args.grad_accum / self.args.batch_size
         scheduler = get_linear_schedule_with_warmup(
             optimizer, num_warmup_steps=self.args.warmup, num_training_steps=num_steps
         )
@@ -197,6 +209,7 @@ class Summarizer(pl.LightningModule):
         parser.add_argument("--fp32", action='store_true', help="default is fp16. Use --fp32 to switch to fp32")
         parser.add_argument("--debug", action='store_true', help="debug run")
         parser.add_argument("--resume_ckpt", type=str, help="Path of a checkpoint to resume from")
+        parser.add_argument('--grad_ckpt', action='store_true', help='Enable gradient checkpointing to save memory')
 
         return parser
 
