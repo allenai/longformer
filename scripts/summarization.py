@@ -18,9 +18,10 @@ from rouge_score import rouge_scorer
 
 
 class SummarizationDataset(Dataset):
-    def __init__(self, hf_dataset, tokenizer, max_output_len):
+    def __init__(self, hf_dataset, tokenizer, max_input_len, max_output_len):
         self.hf_dataset = hf_dataset
         self.tokenizer = tokenizer
+        self.max_input_len = max_input_len
         self.max_output_len = max_output_len
 
     def __len__(self):
@@ -137,7 +138,8 @@ class Summarizer(pl.LightningModule):
     def _get_dataloader(self, current_dataloader, split_name, is_train):
         if current_dataloader is not None:
             return current_dataloader
-        dataset = SummarizationDataset(hf_dataset=self.hf_datasets[split_name], tokenizer=self.tokenizer, max_output_len=self.args.max_output_len)
+        dataset = SummarizationDataset(hf_dataset=self.hf_datasets[split_name], tokenizer=self.tokenizer,
+                                       max_input_len=self.args.max_input_len, max_output_len=self.args.max_output_len)
         sampler = torch.utils.data.distributed.DistributedSampler(dataset, shuffle=is_train) if self.trainer.use_ddp else None
         return DataLoader(dataset, batch_size=self.args.batch_size, shuffle=(sampler is None),
                           num_workers=self.args.num_workers, sampler=sampler,
