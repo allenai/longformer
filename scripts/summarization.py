@@ -5,7 +5,7 @@ import numpy as np
 
 import torch
 from torch.utils.data import DataLoader, Dataset
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, AutoConfig
 from transformers.optimization import get_linear_schedule_with_warmup
 import nlp
 from rouge_score import rouge_scorer
@@ -15,7 +15,7 @@ from pytorch_lightning.logging import TestTubeLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.overrides.data_parallel import LightningDistributedDataParallel
 
-from longformer import LongformerEncoderDecoderForConditionalGeneration
+from longformer import LongformerEncoderDecoderForConditionalGeneration, LongformerEncoderDecoderConfig
 from longformer.sliding_chunks import pad_to_window_size
 
 
@@ -51,12 +51,18 @@ class Summarizer(pl.LightningModule):
         self.args = args
         self.hparams = args
         self.tokenizer = AutoTokenizer.from_pretrained(self.args.tokenizer, use_fast=True)
+
         if 'long' in self.args.model_path:
-            # TODO: remember to set attention_dropout = 0.1
+            config = LongformerEncoderDecoderConfig.from_pretrained(self.args.model_path)
+            config.attention_dropout = self.args.attention_dropout
             self.model = LongformerEncoderDecoderForConditionalGeneration.from_pretrained(
-                self.args.model_path, gradient_checkpointing=self.args.grad_ckpt,)
+                self.args.model_path, gradient_checkpointing=self.args.grad_ckpt,
+                config=config)
         else:
-            self.model = AutoModelForSeq2SeqLM.from_pretrained(self.args.model_path)
+            config = AutoConfig.from_pretrained(self.args.model_path)
+            config.attention_dropout = self.args.attention_dropout
+            self.model = AutoModelForSeq2SeqLM.from_pretrained(
+                self.args.model_path, config=config)
         self.train_dataloader_object = self.val_dataloader_object = self.test_dataloader_object = None
 
     def forward(self, input_ids, output_ids):
@@ -210,6 +216,8 @@ class Summarizer(pl.LightningModule):
         parser.add_argument("--debug", action='store_true', help="debug run")
         parser.add_argument("--resume_ckpt", type=str, help="Path of a checkpoint to resume from")
         parser.add_argument('--grad_ckpt', action='store_true', help='Enable gradient checkpointing to save memory')
+        parser.add_argument("--attention_dropout", type=float, default=0.1,
+                            help="attention dropout")
 
         return parser
 
