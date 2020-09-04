@@ -459,16 +459,19 @@ class TriviaQA(pl.LightningModule):
         output = self.forward(input_ids, input_mask, segment_ids, subword_starts, subword_ends, answer_token_ids)
         if self.args.seq2seq:
             logit_scores = output[1]
-            best_answer_score = logit_scores.max()
-            best_answer_index = logit_scores.argmax().item()
-            generated_ids = self.model.generate(input_ids=input_ids[best_answer_index:best_answer_index + 1],
-                                                attention_mask=input_mask[best_answer_index:best_answer_index + 1],
-                                                use_cache=True,)
-            generated_answer_ids = generated_ids[0]
-            generated_answer_ids[-1] = self.tokenizer.eos_token_id
-            index_of_eos_token = (generated_answer_ids == self.tokenizer.eos_token_id).nonzero()[0, 0].item()
-            generated_answer_ids = generated_answer_ids[1:index_of_eos_token]
-            answer_text = self.tokenizer.decode(generated_answer_ids)
+            answer_score_indices = logit_scores.sort().indices
+            generated_ids = self.model.generate(input_ids=input_ids, attention_mask=input_mask, use_cache=True,)
+            answer_text = ''
+            best_answer_score = 0
+            for i in answer_score_indices:
+                generated_answer_ids = generated_ids[answer_score_indices[i]]
+                generated_answer_ids[-1] = self.tokenizer.eos_token_id
+                index_of_eos_token = (generated_answer_ids == self.tokenizer.eos_token_id).nonzero()[0, 0].item()
+                generated_answer_ids = generated_answer_ids[1:index_of_eos_token]
+                answer_text = self.tokenizer.decode(generated_answer_ids)
+                if answer_text != '':
+                    best_answer_score = logit_scores[answer_score_indices[i]]
+                    break
             f1_score = evaluation_utils.metric_max_over_ground_truths(evaluation_utils.f1_score, answer_text, aliases)
             em_score = evaluation_utils.metric_max_over_ground_truths(evaluation_utils.exact_match_score, answer_text, aliases)
             return {'vloss': output[0], 'vem': generated_answer_ids.new_zeros([1]).float(),
