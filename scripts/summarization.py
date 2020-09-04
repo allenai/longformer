@@ -55,9 +55,9 @@ class Summarizer(pl.LightningModule):
         if 'long' in self.args.model_path:
             config = LongformerEncoderDecoderConfig.from_pretrained(self.args.model_path)
             config.attention_dropout = self.args.attention_dropout
+            config.gradient_checkpointing = self.args.grad_ckpt
             self.model = LongformerEncoderDecoderForConditionalGeneration.from_pretrained(
-                self.args.model_path, gradient_checkpointing=self.args.grad_ckpt,
-                config=config)
+                self.args.model_path, config=config)
         else:
             config = AutoConfig.from_pretrained(self.args.model_path)
             config.attention_dropout = self.args.attention_dropout
@@ -96,15 +96,18 @@ class Summarizer(pl.LightningModule):
         return {'loss': loss, 'log': tensorboard_logs}
 
     def validation_step(self, batch, batch_nb):
+        for p in self.model.parameters():
+            p.requires_grad = False
+
         outputs = self.forward(*batch)
         vloss = outputs[0]
         input_ids, output_ids = batch
         attention_mask = torch.ones(input_ids.shape, dtype=torch.long, device=input_ids.device)
         attention_mask[input_ids == self.tokenizer.pad_token_id] = 0
-        generated_ids = self.model.generate(input_ids=input_ids,
-                                            attention_mask=attention_mask,
-                                            use_cache=True,
-                                            max_length=self.args.max_output_len)
+
+        generated_ids = self.model.generate(input_ids=input_ids, attention_mask=attention_mask,
+                                            use_cache=True, max_length=self.args.max_output_len,
+                                            num_beams=1)
         generated_str = self.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
         gold_str = self.tokenizer.batch_decode(output_ids, skip_special_tokens=True)
         scorer = rouge_scorer.RougeScorer(rouge_types=['rouge1', 'rouge2', 'rougeL'], use_stemmer=False)
@@ -124,6 +127,9 @@ class Summarizer(pl.LightningModule):
                 'rougeL': vloss.new_zeros(1) + rougel, }
 
     def validation_epoch_end(self, outputs):
+        for p in self.model.parameters():
+            p.requires_grad = True
+
         names = ['vloss', 'rouge1', 'rouge2', 'rougeL']
         metrics = []
         for name in names:
