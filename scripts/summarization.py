@@ -65,13 +65,17 @@ class Summarizer(pl.LightningModule):
                 self.args.model_path, config=config)
         self.train_dataloader_object = self.val_dataloader_object = self.test_dataloader_object = None
 
-    def forward(self, input_ids, output_ids):
+    def _prepare_input(self, input_ids):
         attention_mask = torch.ones(input_ids.shape, dtype=torch.long, device=input_ids.device)
         attention_mask[input_ids == self.tokenizer.pad_token_id] = 0
         if isinstance(self.model, LongformerEncoderDecoderForConditionalGeneration):
             attention_mask[:, 0] = 2  # global attention on one token for all model params to be used, which is important for gradient checkpointing to work
             input_ids, attention_mask = pad_to_window_size(  # ideally, should be moved inside the LongformerModel
                 input_ids, attention_mask, self.model.config.attention_window[0], self.tokenizer.pad_token_id)
+        return input_ids, attention_mask
+
+    def forward(self, input_ids, output_ids):
+        input_ids, attention_mask = self._prepare_input(input_ids)
         decoder_input_ids = output_ids[:, :-1]
         decoder_attention_mask = (decoder_input_ids != self.tokenizer.pad_token_id)
         labels = output_ids[:, 1:].clone()
@@ -102,9 +106,7 @@ class Summarizer(pl.LightningModule):
         outputs = self.forward(*batch)
         vloss = outputs[0]
         input_ids, output_ids = batch
-        attention_mask = torch.ones(input_ids.shape, dtype=torch.long, device=input_ids.device)
-        attention_mask[input_ids == self.tokenizer.pad_token_id] = 0
-
+        input_ids, attention_mask = self._prepare_input(input_ids)
         generated_ids = self.model.generate(input_ids=input_ids, attention_mask=attention_mask,
                                             use_cache=True, max_length=self.args.max_output_len,
                                             num_beams=1)
