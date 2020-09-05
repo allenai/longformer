@@ -139,6 +139,7 @@ class Summarizer(pl.LightningModule):
                 metric /= self.trainer.world_size
             metrics.append(metric)
         logs = dict(zip(*[names, metrics]))
+        print(logs)
         return {'avg_val_loss': logs['vloss'], 'log': logs, 'progress_bar': logs}
 
     def test_step(self, batch, batch_nb):
@@ -176,8 +177,7 @@ class Summarizer(pl.LightningModule):
 
     @pl.data_loader
     def val_dataloader(self):
-        split_name = 'validation' if not self.args.debug else 'train'
-        self.val_dataloader_object = self._get_dataloader(self.val_dataloader_object, split_name, is_train=False)
+        self.val_dataloader_object = self._get_dataloader(self.val_dataloader_object, 'validation', is_train=False)
         return self.val_dataloader_object
 
     @pl.data_loader
@@ -263,9 +263,9 @@ def main(args):
                          max_epochs=args.epochs if not args.debug else 100,
                          replace_sampler_ddp=False,
                          accumulate_grad_batches=args.grad_accum,
-                         val_check_interval=args.val_every,
+                         val_check_interval=args.val_every if not args.debug else 1,
                          num_sanity_val_steps=2,
-                         check_val_every_n_epoch=1 if not args.debug else 5,
+                         check_val_every_n_epoch=1 if not args.debug else 1,
                          val_percent_check=args.val_percent_check,
                          test_percent_check=args.val_percent_check,
                          logger=logger,
