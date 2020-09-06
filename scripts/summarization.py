@@ -56,6 +56,8 @@ class Summarizer(pl.LightningModule):
             config = LongformerEncoderDecoderConfig.from_pretrained(self.args.model_path)
             config.attention_dropout = self.args.attention_dropout
             config.gradient_checkpointing = self.args.grad_ckpt
+            config.attention_mode = self.args.attention_mode
+            config.attention_window = [self.args.attention_window] * config.encoder_layers
             self.model = LongformerEncoderDecoderForConditionalGeneration.from_pretrained(
                 self.args.model_path, config=config)
         else:
@@ -70,8 +72,14 @@ class Summarizer(pl.LightningModule):
         attention_mask[input_ids == self.tokenizer.pad_token_id] = 0
         if isinstance(self.model, LongformerEncoderDecoderForConditionalGeneration):
             attention_mask[:, 0] = 2  # global attention on one token for all model params to be used, which is important for gradient checkpointing to work
+            if self.args.attention_mode == 'sliding_chunks':
+                half_padding_mod = self.model.config.attention_window[0]
+            elif self.args.attention_mode == 'sliding_chunks_no_overlap':
+                half_padding_mod = self.model.config.attention_window[0] / 2
+            else:
+                raise NotImplementedError
             input_ids, attention_mask = pad_to_window_size(  # ideally, should be moved inside the LongformerModel
-                input_ids, attention_mask, self.model.config.attention_window[0], self.tokenizer.pad_token_id)
+                input_ids, attention_mask, half_padding_mod, self.tokenizer.pad_token_id)
         return input_ids, attention_mask
 
     def forward(self, input_ids, output_ids):
@@ -224,8 +232,9 @@ class Summarizer(pl.LightningModule):
         parser.add_argument("--debug", action='store_true', help="debug run")
         parser.add_argument("--resume_ckpt", type=str, help="Path of a checkpoint to resume from")
         parser.add_argument('--grad_ckpt', action='store_true', help='Enable gradient checkpointing to save memory')
-        parser.add_argument("--attention_dropout", type=float, default=0.1,
-                            help="attention dropout")
+        parser.add_argument("--attention_dropout", type=float, default=0.1, help="attention dropout")
+        parser.add_argument("--attention_mode", type=str, default='sliding_chunks', help="Longformer attention mode")
+        parser.add_argument("--attention_window", type=int, default=512, help="Attention window")
 
         return parser
 
