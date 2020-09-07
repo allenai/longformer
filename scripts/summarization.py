@@ -63,6 +63,8 @@ class Summarizer(pl.LightningModule):
             config = LongformerEncoderDecoderConfig.from_pretrained(self.args.model_path)
             config.attention_dropout = self.args.attention_dropout
             config.gradient_checkpointing = self.args.grad_ckpt
+            config.attention_mode = self.args.attention_mode
+            config.attention_window = [self.args.attention_window] * config.encoder_layers
             self.model = LongformerEncoderDecoderForConditionalGeneration.from_pretrained(
                 self.args.model_path, config=config)
         else:
@@ -72,13 +74,23 @@ class Summarizer(pl.LightningModule):
                 self.args.model_path, config=config)
         self.train_dataloader_object = self.val_dataloader_object = self.test_dataloader_object = None
 
-    def forward(self, input_ids, output_ids):
+    def _prepare_input(self, input_ids):
         attention_mask = torch.ones(input_ids.shape, dtype=torch.long, device=input_ids.device)
         attention_mask[input_ids == self.tokenizer.pad_token_id] = 0
         if isinstance(self.model, LongformerEncoderDecoderForConditionalGeneration):
             attention_mask[:, 0] = 2  # global attention on one token for all model params to be used, which is important for gradient checkpointing to work
+            if self.args.attention_mode == 'sliding_chunks':
+                half_padding_mod = self.model.config.attention_window[0]
+            elif self.args.attention_mode == 'sliding_chunks_no_overlap':
+                half_padding_mod = self.model.config.attention_window[0] / 2
+            else:
+                raise NotImplementedError
             input_ids, attention_mask = pad_to_window_size(  # ideally, should be moved inside the LongformerModel
-                input_ids, attention_mask, self.model.config.attention_window[0], self.tokenizer.pad_token_id)
+                input_ids, attention_mask, half_padding_mod, self.tokenizer.pad_token_id)
+        return input_ids, attention_mask
+
+    def forward(self, input_ids, output_ids):
+        input_ids, attention_mask = self._prepare_input(input_ids)
         decoder_input_ids = output_ids[:, :-1]
         decoder_attention_mask = (decoder_input_ids != self.tokenizer.pad_token_id)
         labels = output_ids[:, 1:].clone()
@@ -108,9 +120,7 @@ class Summarizer(pl.LightningModule):
         outputs = self.forward(*batch)
         vloss = outputs[0]
         input_ids, output_ids = batch
-        attention_mask = torch.ones(input_ids.shape, dtype=torch.long, device=input_ids.device)
-        attention_mask[input_ids == self.tokenizer.pad_token_id] = 0
-
+        input_ids, attention_mask = self._prepare_input(input_ids)
         generated_ids = self.model.generate(input_ids=input_ids, attention_mask=attention_mask,
                                             use_cache=True, max_length=self.args.max_output_len,
                                             num_beams=1)
@@ -145,6 +155,7 @@ class Summarizer(pl.LightningModule):
                 metric /= self.trainer.world_size
             metrics.append(metric)
         logs = dict(zip(*[names, metrics]))
+        print(logs)
         return {'avg_val_loss': logs['vloss'], 'log': logs, 'progress_bar': logs}
 
     def test_step(self, batch, batch_nb):
@@ -182,8 +193,7 @@ class Summarizer(pl.LightningModule):
 
     @pl.data_loader
     def val_dataloader(self):
-        split_name = 'validation' if not self.args.debug else 'train'
-        self.val_dataloader_object = self._get_dataloader(self.val_dataloader_object, split_name, is_train=False)
+        self.val_dataloader_object = self._get_dataloader(self.val_dataloader_object, 'validation', is_train=False)
         return self.val_dataloader_object
 
     @pl.data_loader
@@ -228,8 +238,9 @@ class Summarizer(pl.LightningModule):
         parser.add_argument("--debug", action='store_true', help="debug run")
         parser.add_argument("--resume_ckpt", type=str, help="Path of a checkpoint to resume from")
         parser.add_argument('--grad_ckpt', action='store_true', help='Enable gradient checkpointing to save memory')
-        parser.add_argument("--attention_dropout", type=float, default=0.1,
-                            help="attention dropout")
+        parser.add_argument("--attention_dropout", type=float, default=0.1, help="attention dropout")
+        parser.add_argument("--attention_mode", type=str, default='sliding_chunks', help="Longformer attention mode")
+        parser.add_argument("--attention_window", type=int, default=512, help="Attention window")
 
         return parser
 
@@ -269,9 +280,9 @@ def main(args):
                          max_epochs=args.epochs if not args.debug else 100,
                          replace_sampler_ddp=False,
                          accumulate_grad_batches=args.grad_accum,
-                         val_check_interval=args.val_every,
+                         val_check_interval=args.val_every if not args.debug else 1,
                          num_sanity_val_steps=2,
-                         check_val_every_n_epoch=1 if not args.debug else 5,
+                         check_val_every_n_epoch=1 if not args.debug else 1,
                          val_percent_check=args.val_percent_check,
                          test_percent_check=args.val_percent_check,
                          logger=logger,

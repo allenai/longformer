@@ -125,7 +125,7 @@ def pad_to_window_size(input_ids: torch.Tensor, attention_mask: torch.Tensor,
     Returns
         (input_ids, attention_mask) padded to length divisible by 2 * one_sided_window_size
     '''
-    w = 2 * one_sided_window_size
+    w = int(2 * one_sided_window_size)
     seqlen = input_ids.size(1)
     padding_len = (w - seqlen % w) % w
     input_ids = F.pad(input_ids, (0, padding_len), value=pad_token_id)
