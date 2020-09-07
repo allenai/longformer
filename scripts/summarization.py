@@ -112,7 +112,7 @@ class Summarizer(pl.LightningModule):
         tensorboard_logs = {'train_loss': loss, 'lr': lr,
                             'input_size': batch[0].numel(),
                             'output_size': batch[1].numel(),
-                            'mem': torch.cuda.memory_allocated(loss.device) / 1024 ** 3}
+                            'mem': torch.cuda.memory_allocated(loss.device) / 1024 ** 3 if torch.cuda.is_available() else 0}
         return {'loss': loss, 'log': tensorboard_logs}
 
     def validation_step(self, batch, batch_nb):
@@ -171,7 +171,7 @@ class Summarizer(pl.LightningModule):
         optimizer = torch.optim.Adam(self.model.parameters(), lr=self.args.lr)
         if self.args.debug:
             return optimizer  # const LR
-        num_gpus = torch.cuda.device_count()
+        num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 1
         num_steps = self.args.dataset_size * self.args.epochs / num_gpus / self.args.grad_accum / self.args.batch_size
         scheduler = get_linear_schedule_with_warmup(
             optimizer, num_warmup_steps=self.args.warmup, num_training_steps=num_steps
@@ -277,7 +277,7 @@ def main(args):
 
     args.dataset_size = 203037  # hardcode dataset size. Needed to compute number of steps for the lr scheduler
 
-    trainer = pl.Trainer(gpus=args.gpus, distributed_backend='ddp',
+    trainer = pl.Trainer(gpus=args.gpus, distributed_backend='ddp' if torch.cuda.is_available() else None,
                          track_grad_norm=-1,
                          max_epochs=args.epochs if not args.debug else 100,
                          replace_sampler_ddp=False,
