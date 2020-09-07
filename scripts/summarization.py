@@ -33,6 +33,8 @@ class SummarizationDataset(Dataset):
         entry = self.hf_dataset[idx]
         input_ids = self.tokenizer.encode(entry['article'], truncation=True, max_length=self.max_input_len)
         output_ids = self.tokenizer.encode(entry['abstract'], truncation=True, max_length=self.max_output_len)
+        if self.tokenizer.bos_token_id is None:  # pegasus
+            output_ids = [self.tokenizer.pad_token_id] + output_ids
         return torch.tensor(input_ids), torch.tensor(output_ids)
 
     @staticmethod
