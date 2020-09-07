@@ -14,7 +14,10 @@ pip install git+https://github.com/allenai/longformer.git@encoderdecoder
 from longformer import LongformerEncoderDecoderForConditionalGeneration
 model = LongformerEncoderDecoderForConditionalGeneration.from_pretrained(downloaded_checkpoint, gradient_checkpointing=True)
 ```
-Check the script `scripts/summarization.py` for an example of how to use the model.
+
+- Check the script `scripts/summarization.py` for an example of how to use the model.
+
+- Make sure to use the huggingface/transformers fork specified in `requirements.txt`.
 
 **\*\*\*\*\* New July 23rd, 2020: Speed degradation \*\*\*\*\***
 
