@@ -40,7 +40,7 @@ class DistributedManager:
         print(self.hosts)
 
     def kill_python(self):
-        output = self.client.run_command('pkill python')
+        output = self.client.run_command("ps -aux | grep python | awk '{print $2}' |xargs kill")
         self._process_output(output)
 
     def _deploy_branch(self, branch):
@@ -57,7 +57,7 @@ class DistributedManager:
         output = self.client.run_command(";".join(cmd))
         self._process_output(output)
 
-    def _parallel_shell_scp(self, src_file, dst_dir, hosts, max_parallelism=None):
+    def _parallel_shell_scp(self, src_file, dst_dir, hosts, max_parallelism=None, head_node_ip=None):
         # run a command on hosts in parallel with subprocess
         # hosts is a list of ip addresses
         if max_parallelism is None:
@@ -70,6 +70,8 @@ class DistributedManager:
 
         for host_group in host_groups:
             processes = []
+            if head_node_ip != None:
+                src_file = f'{head_node_ip}:{src_file}'
             for host in host_group:
                 ssh_cmd = [
                     "scp",
@@ -136,12 +138,13 @@ class DistributedManager:
         cmd = [
             "cd {}".format(code_dir),
             "git fetch",
+            "git stash",
             "git checkout master",
             "git reset --hard origin/master",
             "git pull",
             "git checkout {}".format(branch),
             f"git reset --hard origin/{branch}",
-            # f"git checkout origin/{branch} requirements.txt",
+            f"git checkout origin/{branch} requirements.txt",
             # f"git checkout origin/{branch} longformer/ptl_model_checkpoint.py",
             # f"git checkout origin/{branch} scripts/pretrain.py",
             "git pull origin {}".format(branch),
@@ -162,6 +165,22 @@ class DistributedManager:
             "echo `creating model dirs`...",
             "sudo mkdir -p /mnt/disk-models/",
             "sudo chmod a+w /mnt/disk-models/",
+        ]
+        self._parallel_shell_ssh(cmd, self.hosts)
+
+    def create_swap(self, swap_size=8):
+        cmd = [
+            f"sudo fallocate -l {swap_size}G /swapfile",
+            "sudo chmod 600 /swapfile",
+            "sudo mkswap /swapfile",
+            "sudo swapon /swapfile",
+        ]
+        self._parallel_shell_ssh(cmd, self.hosts)
+
+    def rm_swap(self, swap_size=8):
+        cmd = [
+            "sudo swapoff /swapfile",
+            "sudo rm /swapfile",
         ]
         self._parallel_shell_ssh(cmd, self.hosts)
 
@@ -293,14 +312,18 @@ class DistributedManager:
     def copy_file(self, file_path, dest_dir):
         self._parallel_shell_scp(file_path, dest_dir, self.hosts)
 
-    def copy_file_head_node_other_nodes(self, file_dir, file_name):
+    def copy_file_head_node_other_nodes(self, file_path, dest_path):
+        head_node_ip = self.hosts[0]
+        self._parallel_shell_scp(file_path, dest_path, self.hosts[1:], head_node_ip=head_node_ip)
+
+    def copy_file_head_node_other_nodes(self, file_path, dest_path):
         # copy a file in file_dir/file_name from the head node to all other nodes
         # to do so, run scp from every machine except the head node
-        file_full_path = os.path.join(file_dir, file_name)
         head_node_ip = self.hosts[0]
+        import pathlib
         cmd = [
-            "mkdir -p {}".format(file_dir),
-            "scp -oStrictHostKeyChecking=no {}:{} {}".format(head_node_ip, file_full_path, file_full_path)
+            "mkdir -p {}".format(str(pathlib.Path(dest_path).parent)),
+            "scp -oStrictHostKeyChecking=no {}:{} {}".format(head_node_ip, file_path, dest_path)
         ]
         self._parallel_shell_ssh(cmd, self.hosts[1:], 4)
 
@@ -309,6 +332,15 @@ class DistributedManager:
             'source /anaconda3/bin/activate torch-xla-nightly',
             'yes | pip uninstall transformers',
             'pip install git+git://github.com/matt-peters/transformers.git@working'
+        ]
+        self._parallel_shell_ssh(cmd, self.hosts)
+
+    def upgrade_wheels(self):
+        cmd = [
+            'cd /usr/share/torch-xla-nightly/pytorch/xla',
+            'export PATH=/anaconda3/bin/:$PATH',
+            '. ./scripts/update_nightly_torch_wheels.sh',
+            'echo "wheels upgraded"'
         ]
         self._parallel_shell_ssh(cmd, self.hosts)
 
