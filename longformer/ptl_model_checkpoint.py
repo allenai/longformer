@@ -38,6 +38,14 @@ def get_rank():
 
     return global_rank
 
+def _log(message, master_only=True):
+    if not master_only:
+        log.info(message)
+    else:
+        rank = get_rank()
+        if rank == 0:
+            log.info(message)
+
 
 class ModelCheckpoint(Callback):
     r"""
@@ -245,11 +253,11 @@ class ModelCheckpoint(Callback):
             elif self.check_monitor_top_k(current):
                 self._do_check_save(filepath, current, epoch)
             elif self.verbose > 0:
-                log.info(f'\nEpoch {epoch:05d}: {self.monitor}  was not in top {self.save_top_k}')
+                _log(f'\nEpoch {epoch:05d}: {self.monitor}  was not in top {self.save_top_k}')
 
         else:
             if self.verbose > 0:
-                log.info(f'\nEpoch {epoch:05d}: saving model to {filepath}')
+                _log(f'\nEpoch {epoch:05d}: saving model to {filepath}')
             self._save_model(filepath)
 
     def _do_check_save(self, filepath, current, epoch):
@@ -273,7 +281,7 @@ class ModelCheckpoint(Callback):
         self.best = _op(self.best_k_models.values())
 
         if self.verbose > 0:
-            log.info(
+            _log(
                 f'\nEpoch {epoch:05d}: {self.monitor} reached'
                 f' {current:0.5f} (best {self.best:0.5f}), saving model to'
                 f' {filepath} as top {self.save_top_k}')
@@ -283,5 +291,6 @@ class ModelCheckpoint(Callback):
         # only delete for rank 0
         if get_rank() <= 0:
             for cur_path in del_list:
+                _log(f'deleting oldest file: {cur_path}')
                 if cur_path != filepath:
                     self._del_model(cur_path)
