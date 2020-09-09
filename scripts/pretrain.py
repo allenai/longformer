@@ -17,6 +17,8 @@ import pytorch_lightning as ptl
 from pytorch_lightning.logging.test_tube import TestTubeLogger
 from longformer.ptl_model_checkpoint import ModelCheckpoint
 
+import gc
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -320,9 +322,7 @@ class MLM_Trainer(ptl.Trainer):
                     del chkpt['hparams']
                 self._atomic_save(chkpt, filepath)
 
-        logger.info("DEBUG: DUMPING CHKPT")
         checkpoint = self.dump_checkpoint()
-        logger.info("CHKPT dumped")
         # self._atomic_save has different behavior for XLA vs
         # non-xla.  In XLA, it has a barrier and internal logic to only
         # save for rank=0, so need to call for all ranks. For non-XLA,
@@ -331,6 +331,8 @@ class MLM_Trainer(ptl.Trainer):
             _do_save(checkpoint)
         elif self.proc_rank == 0:
             _do_save(checkpoint)
+        del checkpoint
+        gc.collect()
 
     def _atomic_save(self, checkpoint, filepath: str):
         """Saves a checkpoint atomically, avoiding the creation of incomplete checkpoints.
@@ -345,10 +347,17 @@ class MLM_Trainer(ptl.Trainer):
         """
         tmp_path = str(filepath) + ".part"
         if self.use_tpu and XLA_AVAILABLE:
-            print('DEBUG: trying to save checkpoint using xm')
-            xm.rendezvous("saving_optimizer_states")
+            device = xm.xla_device()
+            ordinal = xm.get_ordinal()
+            local_ordinal = xm.get_ordinal()
+            xm.master_print(f"DEBUG: Saving: process device {device}, local ordinal {local_ordinal}, ordinal {ordinal}", local=False)
+            xm.master_print(f"DEBUG: Pre Save rendezous", local=False)
+            xm.rendezvous("saving_model_state")
+            xm.master_print(f"DEBUG: rendezous met, saving now", local=False)
             xm.save(checkpoint, tmp_path, master_only=True, global_master=True)
-            print('DEBUG: checkpoint saved xm')
+            xm.master_print(f"DEBUG: saving done, waiting for all processes to meet", local=False)
+            xm.rendezvous("saving_model_state")
+            xm.master_print(f"DEBUG: saving finished, all processes reached this", local=False)
             if xm.is_master_ordinal(local=False):
                 os.replace(tmp_path, filepath)
         else:
@@ -411,7 +420,8 @@ def main(args):
         precision=16 if args.fp16 else 32, amp_level='O2',
         num_sanity_val_steps=2,
         val_percent_check=args.val_percent_check,
-        delay_start_process=args.process_spawn_delay
+        delay_start_process=args.process_spawn_delay,
+        # reload_dataloaders_every_epoch=True
     )
     trainer.fit(pretrainer)
 
