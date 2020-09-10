@@ -8,15 +8,13 @@ Automatically save model checkpoints during training.
 
 import os
 import re
-
-import numpy as np
 from typing import Optional
 
+import numpy as np
+import torch
 from pytorch_lightning import _logger as log
 from pytorch_lightning.callbacks.base import Callback
 from pytorch_lightning.utilities import rank_zero_warn
-import torch
-
 
 try:
     import torch_xla.core.xla_model as xm
@@ -39,12 +37,13 @@ def get_rank():
     return global_rank
 
 def _log(message, master_only=True):
+    rank = get_rank()
     if not master_only:
-        log.info(message)
+        if rank % 8 == 0:
+            print(f"{rank}, {message}")
     else:
-        rank = get_rank()
         if rank == 0:
-            log.info(message)
+            print(f"{rank}, {message}")
 
 
 class ModelCheckpoint(Callback):
@@ -245,7 +244,6 @@ class ModelCheckpoint(Callback):
 
         if self.save_top_k != -1:
             current = metrics.get(self.monitor)
-
             if current is None:
                 rank_zero_warn(
                     f'Can save best model only with {self.monitor} available, skipping.', RuntimeWarning
@@ -276,15 +274,11 @@ class ModelCheckpoint(Callback):
             self.kth_best_model = _op(self.best_k_models,
                                       key=self.best_k_models.get)
             self.kth_value = self.best_k_models[self.kth_best_model]
-
         _op = min if self.mode == 'min' else max
         self.best = _op(self.best_k_models.values())
 
         if self.verbose > 0:
-            _log(
-                f'\nEpoch {epoch:05d}: {self.monitor} reached'
-                f' {current:0.5f} (best {self.best:0.5f}), saving model to'
-                f' {filepath} as top {self.save_top_k}')
+            _log(f'\n{self.monitor} reached {current:0.5f}, saving to {filepath}.')
 
         self._save_model(filepath)
 
