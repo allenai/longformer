@@ -224,6 +224,8 @@ class ModelCheckpoint(Callback):
         #if trainer.proc_rank != 0:
         #    return
 
+        if self.args.use_tpu and XLA_AVAILABLE:
+            xm.rendezvous('start_of-validation_end')
         metrics = trainer.callback_metrics
         epoch = trainer.current_epoch
         if self.save_top_k == 0:
