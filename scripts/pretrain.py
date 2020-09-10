@@ -1,23 +1,23 @@
 import argparse
+import gc
 import glob
+import logging
+import math
 import os
 import random
-import logging
-import numpy as np
-import math
-from tqdm import tqdm
 import time
+
+import numpy as np
+import pytorch_lightning as ptl
 import torch
-from transformers import AutoTokenizer, AutoModelForMaskedLM
-from transformers import DataCollatorForLanguageModeling
+from pytorch_lightning.logging.test_tube import TestTubeLogger
+from torch.utils.data import DataLoader, Dataset
+from tqdm import tqdm
+from transformers import (AutoModelForMaskedLM, AutoTokenizer,
+                          DataCollatorForLanguageModeling)
 from transformers.optimization import AdamW, get_linear_schedule_with_warmup
 
-from torch.utils.data import Dataset, DataLoader
-import pytorch_lightning as ptl
-from pytorch_lightning.logging.test_tube import TestTubeLogger
 from longformer.ptl_model_checkpoint import ModelCheckpoint
-
-import gc
 
 
 logging.basicConfig(level=logging.INFO)
@@ -321,13 +321,15 @@ class MLM_Trainer(ptl.Trainer):
                 if 'hparams' in chkpt:
                     del chkpt['hparams']
                 self._atomic_save(chkpt, filepath)
-
+        if self.args.use_tpu and XLA_AVAILABLE:
+            # we need to wait for all processes to meet
+            xm.rendezvous('checkpoint_dump')
         checkpoint = self.dump_checkpoint()
         # self._atomic_save has different behavior for XLA vs
         # non-xla.  In XLA, it has a barrier and internal logic to only
         # save for rank=0, so need to call for all ranks. For non-XLA,
         # it doesn't have rank=0 logic so only call for rank = 0
-        if XLA_AVAILABLE:
+        if self.args.use_tpu and XLA_AVAILABLE:
             _do_save(checkpoint)
         elif self.proc_rank == 0:
             _do_save(checkpoint)
@@ -350,14 +352,8 @@ class MLM_Trainer(ptl.Trainer):
             device = xm.xla_device()
             ordinal = xm.get_ordinal()
             local_ordinal = xm.get_ordinal()
-            xm.master_print(f"DEBUG: Saving: process device {device}, local ordinal {local_ordinal}, ordinal {ordinal}", local=False)
-            xm.master_print(f"DEBUG: Pre Save rendezous", local=False)
             xm.rendezvous("saving_model_state")
-            xm.master_print(f"DEBUG: rendezous met, saving now", local=False)
             xm.save(checkpoint, tmp_path, master_only=True, global_master=True)
-            xm.master_print(f"DEBUG: saving done, waiting for all processes to meet", local=False)
-            xm.rendezvous("saving_model_state")
-            xm.master_print(f"DEBUG: saving finished, all processes reached this", local=False)
             if xm.is_master_ordinal(local=False):
                 os.replace(tmp_path, filepath)
         else:
