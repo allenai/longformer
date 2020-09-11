@@ -321,7 +321,7 @@ class MLM_Trainer(ptl.Trainer):
                 if 'hparams' in chkpt:
                     del chkpt['hparams']
                 self._atomic_save(chkpt, filepath)
-        if self.args.use_tpu and XLA_AVAILABLE:
+        if self.use_tpu and XLA_AVAILABLE:
             # we need to wait for all processes to meet
             xm.rendezvous('checkpoint_dump')
         checkpoint = self.dump_checkpoint()
@@ -329,7 +329,7 @@ class MLM_Trainer(ptl.Trainer):
         # non-xla.  In XLA, it has a barrier and internal logic to only
         # save for rank=0, so need to call for all ranks. For non-XLA,
         # it doesn't have rank=0 logic so only call for rank = 0
-        if self.args.use_tpu and XLA_AVAILABLE:
+        if self.use_tpu and XLA_AVAILABLE:
             _do_save(checkpoint)
         elif self.proc_rank == 0:
             _do_save(checkpoint)
