@@ -128,27 +128,30 @@ class Summarizer(pl.LightningModule):
                                             num_beams=1)
         generated_str = self.tokenizer.batch_decode(generated_ids.tolist(), skip_special_tokens=True)
         gold_str = self.tokenizer.batch_decode(output_ids.tolist(), skip_special_tokens=True)
-        scorer = rouge_scorer.RougeScorer(rouge_types=['rouge1', 'rouge2', 'rougeL'], use_stemmer=False)
-        rouge1 = rouge2 = rougel = 0.0
+        scorer = rouge_scorer.RougeScorer(rouge_types=['rouge1', 'rouge2', 'rougeL', 'rougeLsum'], use_stemmer=False)
+        rouge1 = rouge2 = rougel = rougelsum = 0.0
         for ref, pred in zip(gold_str, generated_str):
             score = scorer.score(ref, pred)
             rouge1 += score['rouge1'].fmeasure
             rouge2 += score['rouge2'].fmeasure
             rougel += score['rougeL'].fmeasure
+            rougelsum += score['rougeLsum'].fmeasure
         rouge1 /= len(generated_str)
         rouge2 /= len(generated_str)
         rougel /= len(generated_str)
+        rougelsum /= len(generated_str)
 
         return {'vloss': vloss,
                 'rouge1': vloss.new_zeros(1) + rouge1,
                 'rouge2': vloss.new_zeros(1) + rouge2,
-                'rougeL': vloss.new_zeros(1) + rougel, }
+                'rougeL': vloss.new_zeros(1) + rougel,
+                'rougeLsum': vloss.new_zeros(1) + rougelsum, }
 
     def validation_epoch_end(self, outputs):
         for p in self.model.parameters():
             p.requires_grad = True
 
-        names = ['vloss', 'rouge1', 'rouge2', 'rougeL']
+        names = ['vloss', 'rouge1', 'rouge2', 'rougeL', 'rougeLsum']
         metrics = []
         for name in names:
             metric = torch.stack([x[name] for x in outputs]).mean()
@@ -280,10 +283,11 @@ def main(args):
     trainer = pl.Trainer(gpus=args.gpus, distributed_backend='ddp' if torch.cuda.is_available() else None,
                          track_grad_norm=-1,
                          max_epochs=args.epochs if not args.debug else 100,
+                         max_steps=None if not args.debug else 1,
                          replace_sampler_ddp=False,
                          accumulate_grad_batches=args.grad_accum,
                          val_check_interval=args.val_every if not args.debug else 1,
-                         num_sanity_val_steps=2,
+                         num_sanity_val_steps=2 if not args.debug else 0,
                          check_val_every_n_epoch=1 if not args.debug else 1,
                          val_percent_check=args.val_percent_check,
                          test_percent_check=args.val_percent_check,
