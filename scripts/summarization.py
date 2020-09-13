@@ -6,7 +6,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, AutoConfig
-from transformers.optimization import get_linear_schedule_with_warmup
+from transformers.optimization import get_linear_schedule_with_warmup, Adafactor
 import nlp
 from rouge_score import rouge_scorer
 
@@ -15,8 +15,32 @@ from pytorch_lightning.logging import TestTubeLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.overrides.data_parallel import LightningDistributedDataParallel
 
+
 from longformer import LongformerEncoderDecoderForConditionalGeneration, LongformerEncoderDecoderConfig
 from longformer.sliding_chunks import pad_to_window_size
+
+
+def label_smoothed_nll_loss(lprobs, target, epsilon, ignore_index=-100):
+    """From fairseq"""
+    if target.dim() == lprobs.dim() - 1:
+        target = target.unsqueeze(-1)
+    nll_loss = -lprobs.gather(dim=-1, index=target)
+    smooth_loss = -lprobs.sum(dim=-1, keepdim=True)
+    if ignore_index is not None:
+        pad_mask = target.eq(ignore_index)
+        nll_loss.masked_fill_(pad_mask, 0.0)
+        smooth_loss.masked_fill_(pad_mask, 0.0)
+        count = (~pad_mask).sum()
+    else:
+        nll_loss = nll_loss.squeeze(-1)
+        smooth_loss = smooth_loss.squeeze(-1)
+        count = nll_loss.numel()
+
+    nll_loss = nll_loss.sum() / count
+    smooth_loss = smooth_loss.sum() / count
+    eps_i = epsilon / lprobs.size(-1)
+    loss = (1.0 - epsilon) * nll_loss + eps_i * smooth_loss
+    return loss, nll_loss
 
 
 class SummarizationDataset(Dataset):
@@ -96,14 +120,24 @@ class Summarizer(pl.LightningModule):
         decoder_input_ids = output_ids[:, :-1]
         decoder_attention_mask = (decoder_input_ids != self.tokenizer.pad_token_id)
         labels = output_ids[:, 1:].clone()
-        labels[labels == self.tokenizer.pad_token_id] = -100
         outputs = self.model(
                 input_ids,
                 attention_mask=attention_mask,
                 decoder_input_ids=decoder_input_ids,
                 decoder_attention_mask=decoder_attention_mask,
-                labels=labels)
-        return outputs
+                use_cache=False,)
+        lm_logits = outputs[0]
+        if self.args.label_smoothing == 0:
+            # Same behavior as modeling_bart.py, besides ignoring pad_token_id
+            ce_loss_fct = torch.nn.CrossEntropyLoss(ignore_index=self.tokenizer.pad_token_id)
+            assert lm_logits.shape[-1] == self.model.config.vocab_size
+            loss = ce_loss_fct(lm_logits.view(-1, lm_logits.shape[-1]), labels.view(-1))
+        else:
+            lprobs = torch.nn.functional.log_softmax(lm_logits, dim=-1)
+            loss, nll_loss = label_smoothed_nll_loss(
+                lprobs, labels, self.args.label_smoothing, ignore_index=self.tokenizer.pad_token_id
+            )
+        return [loss]
 
     def training_step(self, batch, batch_nb):
         output = self.forward(*batch)
@@ -171,7 +205,10 @@ class Summarizer(pl.LightningModule):
         print(result)
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=self.args.lr)
+        if self.args.adafactor:
+            optimizer = Adafactor(self.model.parameters(), lr=self.args.lr, scale_parameter=False, relative_step=False)
+        else:
+            optimizer = torch.optim.Adam(self.model.parameters(), lr=self.args.lr)
         if self.args.debug:
             return optimizer  # const LR
         num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 1
@@ -246,6 +283,8 @@ class Summarizer(pl.LightningModule):
         parser.add_argument("--attention_dropout", type=float, default=0.1, help="attention dropout")
         parser.add_argument("--attention_mode", type=str, default='sliding_chunks', help="Longformer attention mode")
         parser.add_argument("--attention_window", type=int, default=512, help="Attention window")
+        parser.add_argument("--label_smoothing", type=float, default=0.0, required=False)
+        parser.add_argument("--adafactor", action='store_true', help="Use adafactor optimizer")
 
         return parser
 
