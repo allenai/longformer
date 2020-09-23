@@ -156,14 +156,7 @@ class LongformerClassifier(pl.LightningModule):
             fname, tokenizer=self.tokenizer, seqlen=self.args.seqlen - 2, num_samples=self.args.num_samples
         )
 
-        if self.args.gpus > 1:
-            sampler = torch.utils.data.distributed.DistributedSampler(dataset, shuffle=True)
-            loader = DataLoader(dataset, batch_size=self.args.batch_size, num_workers=self.args.num_workers,
-                sampler=sampler)
-        else:
-            loader = DataLoader(
-                dataset, batch_size=self.args.batch_size, shuffle=shuffle,
-                num_workers=self.args.num_workers)
+        loader = DataLoader(dataset, batch_size=self.args.batch_size, num_workers=self.args.num_workers, shuffle=shuffle)
         return loader
 
     def setup(self, mode):
@@ -183,7 +176,7 @@ class LongformerClassifier(pl.LightningModule):
     @property
     def total_steps(self) -> int:
         """The number of total training steps that will be run. Used for lr scheduler purposes."""
-        num_devices = max(1, self.args.gpus)  # TODO: consider num_tpu_cores
+        num_devices = max(1, self.args.total_gpus)  # TODO: consider num_tpu_cores
         effective_batch_size = self.args.batch_size * self.args.grad_accum * num_devices
         dataset_size = len(self.train_loader.dataset)
         return (dataset_size / effective_batch_size) * self.args.num_epochs
@@ -241,35 +234,39 @@ class LongformerClassifier(pl.LightningModule):
 
         outputs = self(**inputs)
         logits, tmp_eval_loss = outputs
-        preds = logits.detach().cpu().numpy()
-        out_label_ids = inputs["labels"].detach().cpu().numpy()
-        return {"val_loss": tmp_eval_loss.detach().cpu(), "pred": preds, "target": out_label_ids}
+        preds = logits
+        out_label_ids = inputs["labels"]
+        return {"val_loss": tmp_eval_loss, "pred": preds, "target": out_label_ids}
 
     def _eval_end(self, outputs) -> tuple:
-        val_loss_mean = torch.stack([x["val_loss"] for x in outputs]).mean().detach().cpu().item()
-        preds = np.concatenate([x["pred"] for x in outputs], axis=0)
+        avg_loss = torch.stack([x['val_loss'] for x in outputs]).mean()
+        preds = torch.cat([x["pred"] for x in outputs], dim=0)
+        labels = torch.cat([x["target"] for x in outputs], dim=0)
+        preds = torch.argmax(preds, axis=-1)
+        accuracy = (preds == labels).int().sum() / float(torch.tensor(preds.shape[-1], dtype=torch.float32, device=labels.device))
+        f1 = calc_f1(preds, labels)
 
-        preds = np.argmax(preds, axis=1)
-
-        out_label_ids = np.concatenate([x["target"] for x in outputs], axis=0)
-        out_label_list = [[] for _ in range(out_label_ids.shape[0])]
-        preds_list = [[] for _ in range(out_label_ids.shape[0])]
-        _, _, f1, _ = precision_recall_fscore_support(out_label_ids, preds)
-        accuracy = (preds == out_label_ids).sum() / preds.shape[0]
-        # accuracy = (preds == out_label_ids).int().sum() / torch.tensor(preds.shape[0], dtype=torch.float32, device=out_label_ids.device)
-        results = {"val_loss": val_loss_mean, "f1": f1, "acc": accuracy}
+        if self.trainer.use_ddp:
+            torch.distributed.all_reduce(avg_loss, op=torch.distributed.ReduceOp.SUM)
+            avg_loss /= self.trainer.world_size
+            torch.distributed.all_reduce(accuracy, op=torch.distributed.ReduceOp.SUM)
+            accuracy /= self.trainer.world_size
+            torch.distributed.all_reduce(f1, op=torch.distributed.ReduceOp.SUM)
+            f1 /= self.trainer.world_size
+        # accuracy = (preds == out_label_ids).int().sum() / float(torch.tensor(preds.shape[0], dtype=torch.float32, device=out_label_ids.device))
+        results = {"val_loss": avg_loss, "f1": f1, "acc": accuracy}
 
         ret = {k: v for k, v in results.items()}
         ret["log"] = results
-        return ret, preds_list, out_label_list
+        return ret
 
     def validation_epoch_end(self, outputs: list) -> dict:
-        ret, preds, targets = self._eval_end(outputs)
+        ret = self._eval_end(outputs)
         logs = ret["log"]
         return {"val_loss": logs["val_loss"], "log": logs, "progress_bar": logs}
 
     def test_epoch_end(self, outputs) -> dict:
-        ret, predictions, targets = self._eval_end(outputs)
+        ret = self._eval_end(outputs)
         logs = ret["log"]
         # `val_loss` is the key returned by `self._eval_end()` but actually refers to `test_loss`
         return {"avg_test_loss": logs["val_loss"], "log": logs, "progress_bar": logs}
@@ -296,7 +293,7 @@ def parse_args():
     parser.add_argument('--test_checkpoint', default=None)
     parser.add_argument('--test_percent_check', default=1.0, type=float)
     parser.add_argument('--val_percent_check', default=1.0, type=float)
-    parser.add_argument('--val_check_interval', default=1.0)
+    parser.add_argument('--val_check_interval', default=1.0, type=float)
     parser.add_argument('--num_epochs', default=1, type=int)
     parser.add_argument('--do_predict', default=False, action='store_true')
     parser.add_argument("--lr", type=float, default=2e-5)
@@ -322,7 +319,10 @@ def parse_args():
 def get_train_params(args):
     train_params = {}
     train_params["precision"] = 16 if args.fp16 else 32
-    train_params["distributed_backend"] = "ddp" if args.gpus > 1 else None
+    if (isinstance(args.gpus, int) and args.gpus > 1) or (isinstance(args.gpus, list ) and len(args.gpus) > 1):
+        train_params["distributed_backend"] = "ddp"
+    else:
+        train_params["distributed_backend"] = None
     train_params["accumulate_grad_batches"] = args.grad_accum
     train_params['track_grad_norm'] = -1
     train_params['val_percent_check'] = args.val_percent_check
@@ -373,12 +373,12 @@ def main():
         )
 
         # second part of the path shouldn't be f-string
-        filepath = f'{args.save_dir}/version_{logger.version}/checkpoints/' + 'ep-{epoch}_acc-{val_acc:.3f}'
+        filepath = f'{args.save_dir}/version_{logger.version}/checkpoints/' + 'ep-{epoch}_acc-{acc:.3f}'
         checkpoint_callback = ModelCheckpoint(
             filepath=filepath,
             save_top_k=1,
             verbose=True,
-            monitor='val_acc',
+            monitor='acc',
             mode='max',
             prefix=''
         )
