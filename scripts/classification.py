@@ -77,7 +77,7 @@ class ClassificationDataset(Dataset):
         self.seqlen = seqlen
         self._tokenizer = tokenizer
         all_labels = list(set([e[LABEL_FIELD_NAME] for e in self.data]))
-        self.label_to_idx = {e: i for i, e in enumerate(all_labels)}
+        self.label_to_idx = {e: i for i, e in enumerate(sorted(all_labels))}
         self.idx_to_label = {v: k for k, v in self.label_to_idx.items()}
         self.mask_padding_with_zero = mask_padding_with_zero
 
@@ -161,7 +161,7 @@ class LongformerClassifier(pl.LightningModule):
             fname, tokenizer=self.tokenizer, seqlen=self.hparams.seqlen - 2, num_samples=self.hparams.num_samples
         )
 
-        loader = DataLoader(dataset, batch_size=self.hparams.batch_size, num_workers=self.hparams.num_workers, shuffle=shuffle)
+        loader = DataLoader(dataset, batch_size=self.hparams.batch_size, num_workers=self.hparams.num_workers, shuffle=(shuffle and is_train))
         return loader
 
     def setup(self, mode):
@@ -249,7 +249,6 @@ class LongformerClassifier(pl.LightningModule):
         preds = torch.argmax(preds, axis=-1)
         accuracy = (preds == labels).int().sum() / float(torch.tensor(preds.shape[-1], dtype=torch.float32, device=labels.device))
         f1 = calc_f1(preds, labels)
-
         if self.trainer.use_ddp:
             torch.distributed.all_reduce(avg_loss, op=torch.distributed.ReduceOp.SUM)
             avg_loss /= self.trainer.world_size
@@ -368,7 +367,7 @@ def main():
         model.hparams.dev_file = args.dev_file
         model.hparams.test_file = args.test_file
         model.hparams.train_file = args.dev_file  # the model won't get trained, pass in the dev file instead to load faster
-        trainer = pl.Trainer(gpus=1, test_percent_check=args.test_percent_check, train_percent_check=0.01, val_percent_check=0.01)
+        trainer = pl.Trainer(gpus=args.gpus, test_percent_check=args.test_percent_check)
         trainer.test(model)
 
     else:
