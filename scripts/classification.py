@@ -4,6 +4,7 @@ import json
 import os
 import random
 import argparse
+from argparse import Namespace
 import numpy as np
 import glob
 
@@ -113,17 +114,20 @@ class ClassificationDataset(Dataset):
 
 class LongformerClassifier(pl.LightningModule):
 
-    def __init__(self, args):
+    def __init__(self, init_args):
         super().__init__()
-        config = LongformerConfig.from_pretrained(args.model)
+        if isinstance(init_args, dict):
+            # for loading the checkpoint, pl passes a dict (hparams are saved as dict)
+            init_args = Namespace(**init_args)
+        config = LongformerConfig.from_pretrained(init_args.model_name_or_path)
         config.attention_mode = 'sliding_chunks'
         self.model_config = config
-        self.model = Longformer.from_pretrained(args.model, config=config)
-        self.tokenizer = RobertaTokenizer.from_pretrained(args.tokenizer)
+        self.model = Longformer.from_pretrained(init_args.model_name_or_path, config=config)
+        self.tokenizer = RobertaTokenizer.from_pretrained(init_args.tokenizer)
         self.tokenizer.model_max_length = self.model.config.max_position_embeddings
-        self.args = args
-        self.args.seqlen = self.model.config.max_position_embeddings
-        self.classifier = nn.Linear(config.hidden_size, args.num_labels)
+        self.hparams = init_args
+        self.hparams.seqlen = self.model.config.max_position_embeddings
+        self.classifier = nn.Linear(config.hidden_size, init_args.num_labels)
 
     def forward(self, input_ids, attention_mask, labels=None):
         input_ids, attention_mask = pad_to_window_size(
@@ -137,31 +141,31 @@ class LongformerClassifier(pl.LightningModule):
         loss = None
         if labels is not None:
             loss_fct = CrossEntropyLoss()
-            loss = loss_fct(logits.view(-1, self.args.num_labels), labels.view(-1))
+
+            loss = loss_fct(logits.view(-1, self.hparams.num_labels), labels.view(-1))
 
         return logits, loss
 
     def _get_loader(self, split, shuffle=True):
         if split == 'train':
-            fname = self.args.train_file
+            fname = self.hparams.train_file
         elif split == 'dev':
-            fname = self.args.dev_file
+            fname = self.hparams.dev_file
         elif split == 'test':
-            fname = self.args.test_file
+            fname = self.hparams.test_file
         else:
             assert False
         is_train = split == 'train'
 
         dataset = ClassificationDataset(
-            fname, tokenizer=self.tokenizer, seqlen=self.args.seqlen - 2, num_samples=self.args.num_samples
+            fname, tokenizer=self.tokenizer, seqlen=self.hparams.seqlen - 2, num_samples=self.hparams.num_samples
         )
 
-        loader = DataLoader(dataset, batch_size=self.args.batch_size, num_workers=self.args.num_workers, shuffle=shuffle)
+        loader = DataLoader(dataset, batch_size=self.hparams.batch_size, num_workers=self.hparams.num_workers, shuffle=shuffle)
         return loader
 
     def setup(self, mode):
-        if mode == "fit":
-            self.train_loader = self._get_loader("train")
+        self.train_loader = self._get_loader("train")
 
     def train_dataloader(self):
         return self.train_loader
@@ -176,15 +180,15 @@ class LongformerClassifier(pl.LightningModule):
     @property
     def total_steps(self) -> int:
         """The number of total training steps that will be run. Used for lr scheduler purposes."""
-        num_devices = max(1, self.args.total_gpus)  # TODO: consider num_tpu_cores
-        effective_batch_size = self.args.batch_size * self.args.grad_accum * num_devices
+        num_devices = max(1, self.hparams.total_gpus)  # TODO: consider num_tpu_cores
+        effective_batch_size = self.hparams.batch_size * self.hparams.grad_accum * num_devices
         dataset_size = len(self.train_loader.dataset)
-        return (dataset_size / effective_batch_size) * self.args.num_epochs
+        return (dataset_size / effective_batch_size) * self.hparams.num_epochs
 
     def get_lr_scheduler(self):
-        get_schedule_func = arg_to_scheduler[self.args.lr_scheduler]
+        get_schedule_func = arg_to_scheduler[self.hparams.lr_scheduler]
         scheduler = get_schedule_func(
-            self.opt, num_warmup_steps=self.args.warmup_steps, num_training_steps=self.total_steps
+            self.opt, num_warmup_steps=self.hparams.warmup_steps, num_training_steps=self.total_steps
         )
         scheduler = {"scheduler": scheduler, "interval": "step", "frequency": 1}
         return scheduler
@@ -196,21 +200,21 @@ class LongformerClassifier(pl.LightningModule):
         optimizer_grouped_parameters = [
             {
                 "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
-                "weight_decay": self.args.weight_decay,
+                "weight_decay": self.hparams.weight_decay,
             },
             {
                 "params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
                 "weight_decay": 0.0,
             },
         ]
-        if self.args.adafactor:
+        if self.hparams.adafactor:
             optimizer = Adafactor(
-                optimizer_grouped_parameters, lr=self.args.lr, scale_parameter=False, relative_step=False
+                optimizer_grouped_parameters, lr=self.hparams.lr, scale_parameter=False, relative_step=False
             )
 
         else:
             optimizer = AdamW(
-                optimizer_grouped_parameters, lr=self.args.lr, eps=self.args.adam_epsilon
+                optimizer_grouped_parameters, lr=self.hparams.lr, eps=self.hparams.adam_epsilon
             )
         self.opt = optimizer
 
@@ -268,18 +272,20 @@ class LongformerClassifier(pl.LightningModule):
     def test_epoch_end(self, outputs) -> dict:
         ret = self._eval_end(outputs)
         logs = ret["log"]
+        results = {}
+        for k, v in logs.items():
+            if isinstance(v, torch.Tensor):
+                results[k] = v.detach().cpu().item()
         # `val_loss` is the key returned by `self._eval_end()` but actually refers to `test_loss`
-        return {"avg_test_loss": logs["val_loss"], "log": logs, "progress_bar": logs}
+        return {"avg_test_loss": logs["val_loss"].detach().cpu().item(), "log": results, "progress_bar": results}
 
     def test_step(self, batch, batch_nb):
         return self.validation_step(batch, batch_nb)
 
-    def test_epoch_end(self, outputs):
-        return self.validation_end(outputs)
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model', default='longformer-base-4096/', help='path to the model')
+    parser.add_argument('--model', '--model_name_or_path', dest='model_name_or_path', default='longformer-base-4096/', help='path to the model')
     parser.add_argument('--tokenizer', default='roberta-base')
     parser.add_argument('--train_file')
     parser.add_argument('--dev_file')
@@ -345,24 +351,29 @@ def main():
         args.gpus = int(args.gpus)
         args.total_gpus = args.gpus
 
+    def infer_num_labels(args):
+        # Dataset will be constructred inside model, here we just want to read labels (seq len doesn't matter here)
+        ds = ClassificationDataset(args.train_file, tokenizer=args.tokenizer, seqlen=4096)
+        num_labels = len(ds.label_to_idx)
+        return num_labels
+
     if args.test_only:
         print('loading model...')
-        model = LongformerClassifier.load_from_checkpoint(args.test_checkpoint)
-        model.args.num_gpus = 1
-        model.args.total_gpus = 1
-        model.args = args
-        model.args.dev_file = args.dev_file
-        model.args.test_file = args.test_file
-        model.args.train_file = args.dev_file  # the model won't get trained, pass in the dev file instead to load faster
+        if args.num_labels == -1:
+            args.num_labels = infer_num_labels(args)
+        model = LongformerClassifier.load_from_checkpoint(args.test_checkpoint, num_labels=args.num_labels)
+        model.hparams.num_gpus = 1
+        model.hparams.total_gpus = 1
+        model.hparams = args
+        model.hparams.dev_file = args.dev_file
+        model.hparams.test_file = args.test_file
+        model.hparams.train_file = args.dev_file  # the model won't get trained, pass in the dev file instead to load faster
         trainer = pl.Trainer(gpus=1, test_percent_check=args.test_percent_check, train_percent_check=0.01, val_percent_check=0.01)
         trainer.test(model)
 
     else:
         if args.num_labels == -1:
-            # Dataset will be constructred inside model, here we just want to read labels (seq len doesn't matter here)
-            ds = ClassificationDataset(args.train_file, tokenizer=args.tokenizer, seqlen=4096)
-            args.num_labels = len(ds.label_to_idx)
-            del ds
+            args.num_labels = infer_num_labels(args)
         model = LongformerClassifier(args)
 
         # default logger used by trainer
