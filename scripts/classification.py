@@ -361,12 +361,6 @@ def main():
         if args.num_labels == -1:
             args.num_labels = infer_num_labels(args)
         model = LongformerClassifier.load_from_checkpoint(args.test_checkpoint, num_labels=args.num_labels)
-        model.hparams.num_gpus = 1
-        model.hparams.total_gpus = 1
-        model.hparams = args
-        model.hparams.dev_file = args.dev_file
-        model.hparams.test_file = args.test_file
-        model.hparams.train_file = args.dev_file  # the model won't get trained, pass in the dev file instead to load faster
         trainer = pl.Trainer(gpus=args.gpus, test_percent_check=args.test_percent_check)
         trainer.test(model)
 
