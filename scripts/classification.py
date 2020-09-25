@@ -7,6 +7,7 @@ import argparse
 from argparse import Namespace
 import numpy as np
 import glob
+import gzip
 
 import torch
 from torch import nn
@@ -69,7 +70,7 @@ class ClassificationDataset(Dataset):
 
     def __init__(self, file_path, tokenizer, seqlen, num_samples=None, mask_padding_with_zero=True):
         self.data = []
-        with open(file_path) as fin:
+        with (gzip.open(file_path, 'rt') if file_path.endswith('.gz') else open(file_path)) as fin:
             for i, line in enumerate(tqdm(fin, desc=f'loading input file {file_path.split("/")[-1]}', unit_scale=1)):
                 self.data.append(json.loads(line))
                 if num_samples and len(self.data) > num_samples:
@@ -119,10 +120,12 @@ class LongformerClassifier(pl.LightningModule):
         if isinstance(init_args, dict):
             # for loading the checkpoint, pl passes a dict (hparams are saved as dict)
             init_args = Namespace(**init_args)
-        config = LongformerConfig.from_pretrained(init_args.model_name_or_path)
+        config_path = init_args.config_path or init_args.model_dir
+        checkpoint_path = init_args.checkpoint_path or init_args.model_dir
+        config = LongformerConfig.from_pretrained(config_path)
         config.attention_mode = 'sliding_chunks'
         self.model_config = config
-        self.model = Longformer.from_pretrained(init_args.model_name_or_path, config=config)
+        self.model = Longformer.from_pretrained(checkpoint_path, config=config)
         self.tokenizer = RobertaTokenizer.from_pretrained(init_args.tokenizer)
         self.tokenizer.model_max_length = self.model.config.max_position_embeddings
         self.hparams = init_args
@@ -284,11 +287,14 @@ class LongformerClassifier(pl.LightningModule):
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model', '--model_name_or_path', dest='model_name_or_path', default='longformer-base-4096/', help='path to the model')
+    parser.add_argument('--model_dir', dest='model_dir', default='longformer-base-4096/', help='path to the model')
+    parser.add_argument('--config_path', default=None, help='path to the config (if not setting dir)')
+    parser.add_argument('--checkpoint_path', default=None, help='path to the model (if not setting checkpoint)')
     parser.add_argument('--tokenizer', default='roberta-base')
     parser.add_argument('--train_file')
     parser.add_argument('--dev_file')
     parser.add_argument('--test_file')
+    parser.add_argument('--input_dir', default=None, help='optionally provide a directory of the data and train/test/dev files will be automatically detected')
     parser.add_argument('--batch_size', default=1, type=int)
     parser.add_argument('--grad_accum', default=1, type=int)
     parser.add_argument('--gpus', default=1)
@@ -319,6 +325,17 @@ def parse_args():
         type=str,
         help="Learning rate scheduler")
     args = parser.parse_args()
+
+    if args.input_dir is not None:
+        files = glob.glob(args.input_dir + '/*')
+        for f in files:
+            fname = f.split('/')[-1]
+            if 'train' in fname:
+                args.train_file = f
+            elif 'dev' in fname or 'val' in fname:
+                args.dev_file = f
+            elif 'test' in fname:
+                args.test_file = f
     return args
 
 def get_train_params(args):
