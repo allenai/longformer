@@ -405,6 +405,7 @@ class WikihopQAModel(LightningModule):
         parser.add_argument("--seed", type=int, default=1234, help="Seed")
         parser.add_argument('--resume-from-checkpoint', default=None, type=str)
         parser.add_argument('--fp16', default=False, action='store_true')
+        parser.add_argument('--amp-level', default="O2", type=str)
 
         return parser
 
@@ -448,7 +449,7 @@ def main(args):
                       logger=logger,
                       checkpoint_callback=checkpoint_callback,
                       use_amp=args.fp16,
-                      amp_level='O2',
+                      amp_level=args.amp_level,
                       resume_from_checkpoint=args.resume_from_checkpoint,
     )
     trainer.fit(model)
