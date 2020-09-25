@@ -420,6 +420,7 @@ def main(args):
                       logger=logger,
                       checkpoint_callback=checkpoint_callback,
                       use_amp=args.fp16,
+                      amp_level='O2',
                       resume_from_checkpoint=args.resume_from_checkpoint,
     )
     trainer.fit(model)
