@@ -236,6 +236,8 @@ class WikihopQAModel(LightningModule):
             # default is to use all context
             self._truncate_seq_len = 1000000000
 
+        self.ddp = self.args.num_gpus > 1
+
 
     def forward(self, candidate_ids, support_ids, prediction_indices, correct_prediction_index, return_predicted_index=False):
         """
@@ -307,9 +309,16 @@ class WikihopQAModel(LightningModule):
     def validation_end(self, outputs):
         total_loss = torch.stack([x['val_loss'] * x['log']['batch_size'].float() for x in outputs]).sum()
         total_batch_size = torch.stack([x['log']['batch_size'] for x in outputs]).sum().float()
-        avg_loss = total_loss / total_batch_size
         total_correct = torch.stack([x['log']['val_accuracy'] * x['log']['batch_size'].float() for x in outputs]).sum()
+
+        if self.ddp:
+            torch.distributed.all_reduce(total_loss, op=torch.distributed.ReduceOp.SUM)
+            torch.distributed.all_reduce(total_batch_size, op=torch.distributed.ReduceOp.SUM)
+            torch.distributed.all_reduce(total_correct, op=torch.distributed.ReduceOp.SUM)
+
+        avg_loss = total_loss / total_batch_size
         accuracy = total_correct / total_batch_size
+
         logs = {'val_loss': avg_loss, 'val_accuracy': accuracy}
         return {'avg_loss': avg_loss, 'log': logs, 'progress_bar': logs}
 
@@ -344,13 +353,18 @@ class WikihopQAModel(LightningModule):
 
         dataset = WikihopQADataset(fname, is_train, tokenize=tokenize)
 
+        if ddp:
+            sampler = torch.utils.data.distributed.DistributedSampler(dataset, shuffle=is_train)
+        else:
+            sampler = None
+
         return DataLoader(
                 dataset,
-                # batch size 1, but will accumulate grads for batch size
+                # batch size 1, but will accumulate gradients
                 batch_size=1,
-                shuffle=is_train,
                 num_workers=self.args.num_workers,
-                sampler=None,
+                shuffle=is_train and sampler is None,
+                sampler=sampler,
                 collate_fn=WikihopQADataset.collate_single_item,
         )
 
@@ -393,7 +407,6 @@ def main(args):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
 
-    assert args.num_gpus == 1
     model = WikihopQAModel(args)
 
     logger = TestTubeLogger(
@@ -412,7 +425,13 @@ def main(args):
         mode='max',
     )
 
+    if args.num_gpus > 1:
+        distributed_backend = 'ddp'
+    else:
+        distributed_backend = None
+
     trainer = Trainer(gpus=args.num_gpus,
+                      distributed_backend=distributed_backend,
                       track_grad_norm=-1,
                       accumulate_grad_batches=args.batch_size,
                       max_epochs=args.num_epochs, early_stop_callback=None,
