@@ -238,6 +238,10 @@ class WikihopQAModel(LightningModule):
 
         self.ddp = self.args.num_gpus > 1
 
+        # Register as a buffer so it is saved in checkpoint and properly restored.
+        num_grad_updates = torch.tensor(0, dtype=torch.long)
+        self.register_buffer('_num_grad_updates', num_grad_updates)
+
 
     def forward(self, candidate_ids, support_ids, prediction_indices, correct_prediction_index, return_predicted_index=False):
         """
@@ -322,6 +326,12 @@ class WikihopQAModel(LightningModule):
         logs = {'val_loss': avg_loss, 'val_accuracy': accuracy}
         return {'avg_loss': avg_loss, 'log': logs, 'progress_bar': logs}
 
+    def optimizer_step(self, current_epoch, batch_nb, optimizer, optimizer_i, second_order_closure=None):
+        optimizer.step()
+        optimizer.zero_grad()
+        self._num_grad_updates += 1
+        self.scheduler.step(self._num_grad_updates.item())
+
     def configure_optimizers(self):
         from transformers.optimization import AdamW, get_linear_schedule_with_warmup
 
@@ -335,25 +345,24 @@ class WikihopQAModel(LightningModule):
         )
 
         num_training_steps = self.args.num_epochs * 43738 / self.args.batch_size / self.args.num_gpus
-        scheduler = {
-            "interval": "step",
-            "scheduler": get_linear_schedule_with_warmup(
+        # Want to step scheduler every gradient update. This isn't supported by this version
+        # of PTL, so manage the scheduler manually.
+        self.scheduler = get_linear_schedule_with_warmup(
                 optimizer,
                 num_warmup_steps=self.args.warmup,
                 num_training_steps=num_training_steps)
-        }
+        self.scheduler.step(self._num_grad_updates.item())
 
-
-        return [optimizer], [scheduler]
+        return [optimizer]
 
     def _get_loader(self, split, fname=None, tokenize=False):
         if fname is None:
-            fname = os.path.join(args.data_dir, "{}.tokenized.json".format(split))
+            fname = os.path.join(self.args.data_dir, "{}.tokenized.json".format(split))
         is_train = split == 'train'
 
         dataset = WikihopQADataset(fname, is_train, tokenize=tokenize)
 
-        if ddp:
+        if self.ddp:
             sampler = torch.utils.data.distributed.DistributedSampler(dataset, shuffle=is_train)
         else:
             sampler = None
