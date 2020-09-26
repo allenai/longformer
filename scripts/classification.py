@@ -26,7 +26,9 @@ from transformers import RobertaTokenizer, AdamW
 
 from torch.utils.data.dataset import IterableDataset
 from tqdm.auto import tqdm
-from sklearn.metrics import precision_recall_fscore_support
+
+import logging
+logger = logging.getLogger(__name__)
 
 from transformers.optimization import (
     Adafactor,
@@ -122,8 +124,10 @@ class LongformerClassifier(pl.LightningModule):
             init_args = Namespace(**init_args)
         config_path = init_args.config_path or init_args.model_dir
         checkpoint_path = init_args.checkpoint_path or init_args.model_dir
+        logger.info(f'loading model from config: {config_path}, checkpoint: {checkpoint_path}')
         config = LongformerConfig.from_pretrained(config_path)
-        config.attention_mode = 'sliding_chunks'
+        config.attention_mode = init_args.attention_mode
+        logger.info(f'attention mode set to {config.attention_mode}')
         self.model_config = config
         self.model = Longformer.from_pretrained(checkpoint_path, config=config)
         self.tokenizer = RobertaTokenizer.from_pretrained(init_args.tokenizer)
@@ -290,6 +294,7 @@ def parse_args():
     parser.add_argument('--model_dir', dest='model_dir', default='longformer-base-4096/', help='path to the model')
     parser.add_argument('--config_path', default=None, help='path to the config (if not setting dir)')
     parser.add_argument('--checkpoint_path', default=None, help='path to the model (if not setting checkpoint)')
+    parser.add_argument('--attention_mode', required=True, default='sliding_chunks')
     parser.add_argument('--tokenizer', default='roberta-base')
     parser.add_argument('--train_file')
     parser.add_argument('--dev_file')
@@ -416,12 +421,12 @@ def main():
             # Optionally, predict and write to output_dir
             fpath = glob.glob(checkpoint_callback.dirpath + '/*.ckpt')[0]
             model = LongformerClassifier.load_from_checkpoint(fpath)
-            model.args.num_gpus = 1
-            model.args.total_gpus = 1
-            model.args = args
-            model.args.dev_file = args.dev_file
-            model.args.test_file = args.test_file
-            model.args.train_file = args.dev_file  # the model won't get trained, pass in the dev file instead to load faster
+            model.hparams.num_gpus = 1
+            model.hparams.total_gpus = 1
+            model.hparams = args
+            model.hparams.dev_file = args.dev_file
+            model.hparams.test_file = args.test_file
+            model.hparams.train_file = args.dev_file  # the model won't get trained, pass in the dev file instead to load faster
             trainer = pl.Trainer(gpus=1, test_percent_check=1.0, train_percent_check=0.01, val_percent_check=0.01, precision=extra_train_params['precision'])
             trainer.test(model)
 
