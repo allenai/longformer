@@ -640,8 +640,6 @@ class TriviaQA(pl.LightningModule):
         parser.add_argument('--model_dir', dest='model_dir', default='longformer-base-4096/', help='path to the model')
         parser.add_argument('--config_path', default=None, help='path to the config (if not setting dir)')
         parser.add_argument('--checkpoint_path', default=None, help='path to the model (if not setting checkpoint)')        
-        parser.add_argument("--model_path", type=str,
-                            help="Path to the checkpoint directory")
         parser.add_argument("--no_progress_bar", action='store_true', help="no progress bar. Good for printing")
         parser.add_argument("--attention_mode", type=str, choices=['tvm', 'sliding_chunks', 'sliding_chunks_no_overlap'],
                             default='sliding_chunks', help='Which implementation of selfattention to use')
