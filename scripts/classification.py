@@ -294,7 +294,7 @@ def parse_args():
     parser.add_argument('--model_dir', dest='model_dir', default='longformer-base-4096/', help='path to the model')
     parser.add_argument('--config_path', default=None, help='path to the config (if not setting dir)')
     parser.add_argument('--checkpoint_path', default=None, help='path to the model (if not setting checkpoint)')
-    parser.add_argument('--attention_mode', required=True, default='sliding_chunks')
+    parser.add_argument('--attention_mode', default='sliding_chunks')
     parser.add_argument('--tokenizer', default='roberta-base')
     parser.add_argument('--train_file')
     parser.add_argument('--dev_file')
