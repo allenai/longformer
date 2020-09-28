@@ -13,11 +13,11 @@ from transformers import RobertaTokenizer
 from scripts.triviaqa_utils import evaluation_utils
 
 import pytorch_lightning as pl
-from pytorch_lightning.logging import TestTubeLogger
+from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.overrides.data_parallel import LightningDistributedDataParallel
 
-from longformer.longformer import Longformer
+from longformer.longformer import Longformer, LongformerConfig
 from longformer.sliding_chunks import pad_to_window_size
 
 
@@ -263,7 +263,10 @@ class TriviaQA(pl.LightningModule):
         self.train_dataloader_object = self.val_dataloader_object = self.test_dataloader_object = None
 
     def load_model(self):
-        model = Longformer.from_pretrained(self.args.model_path)
+        config_path = self.args.config_path or self.args.model_dir
+        checkpoint_path = self.args.checkpoint_path or self.args.model_dir
+        config = LongformerConfig.from_pretrained(config_path)
+        model = Longformer.from_pretrained(checkpoint_path, config=config)
         for layer in model.encoder.layer:
             layer.attention.self.attention_mode = self.args.attention_mode
             self.args.attention_window = layer.attention.self.attention_window
@@ -528,7 +531,8 @@ class TriviaQA(pl.LightningModule):
 
         return {'count': len(qid_to_answer_text)}
 
-    def optimizer_step(self, current_epoch, batch_nb, optimizer, optimizer_i, second_order_closure=None):
+    def optimizer_step(self, current_epoch, batch_idx, optimizer, optimizer_idx,
+                    second_order_closure=None, on_tpu=False, using_native_amp=False, using_lbfgs=False):
         optimizer.step()
         optimizer.zero_grad()
         self.scheduler.step(self.global_step)
@@ -544,7 +548,6 @@ class TriviaQA(pl.LightningModule):
 
         return optimizer
 
-    @pl.data_loader
     def train_dataloader(self):
         if self.train_dataloader_object is not None:
             return self.train_dataloader_object
@@ -554,14 +557,12 @@ class TriviaQA(pl.LightningModule):
                                   max_num_answers=self.args.max_num_answers,
                                   max_question_len=self.args.max_question_len,
                                   ignore_seq_with_no_answers=self.args.ignore_seq_with_no_answers)
-        sampler = torch.utils.data.distributed.DistributedSampler(dataset) if self.trainer.use_ddp else None
-        dl = DataLoader(dataset, batch_size=1, shuffle=(sampler is None),
-                        num_workers=self.args.num_workers, sampler=sampler,
+        dl = DataLoader(dataset, batch_size=1, shuffle=True,
+                        num_workers=self.args.num_workers,
                         collate_fn=TriviaQADataset.collate_one_doc_and_lists)
         self.train_dataloader_object = dl
         return self.train_dataloader_object
 
-    @pl.data_loader
     def val_dataloader(self):
         if self.val_dataloader_object is not None:
             return self.val_dataloader_object
@@ -571,14 +572,12 @@ class TriviaQA(pl.LightningModule):
                                   max_num_answers=self.args.max_num_answers,
                                   max_question_len=self.args.max_question_len,
                                   ignore_seq_with_no_answers=False)  # evaluation data should keep all examples
-        sampler = torch.utils.data.distributed.DistributedSampler(dataset) if self.trainer.use_ddp else None
-        dl = DataLoader(dataset, batch_size=1, shuffle=(sampler is None),
-                        num_workers=self.args.num_workers, sampler=sampler,
+        dl = DataLoader(dataset, batch_size=1, shuffle=False,
+                        num_workers=self.args.num_workers,
                         collate_fn=TriviaQADataset.collate_one_doc_and_lists)
         self.val_dataloader_object = dl
         return self.val_dataloader_object
 
-    @pl.data_loader
     def test_dataloader(self):
         if self.test_dataloader_object is not None:
             return self.test_dataloader_object
@@ -638,10 +637,13 @@ class TriviaQA(pl.LightningModule):
                             help="maximum num of wordpieces/answer. Used at decoding time")
         parser.add_argument("--regular_softmax_loss", action='store_true', help="IF true, use regular softmax. Default is using ORed softmax loss")
         parser.add_argument("--test", action='store_true', help="Test only, no training")
-        parser.add_argument("--model_path", type=str, required=True,
+        parser.add_argument('--model_dir', dest='model_dir', default='longformer-base-4096/', help='path to the model')
+        parser.add_argument('--config_path', default=None, help='path to the config (if not setting dir)')
+        parser.add_argument('--checkpoint_path', default=None, help='path to the model (if not setting checkpoint)')        
+        parser.add_argument("--model_path", type=str,
                             help="Path to the checkpoint directory")
         parser.add_argument("--no_progress_bar", action='store_true', help="no progress bar. Good for printing")
-        parser.add_argument("--attention_mode", type=str, choices=['tvm', 'sliding_chunks'],
+        parser.add_argument("--attention_mode", type=str, choices=['tvm', 'sliding_chunks', 'sliding_chunks_no_overlap'],
                             default='sliding_chunks', help='Which implementation of selfattention to use')
         parser.add_argument("--fp32", action='store_true', help="default is fp16. Use --fp32 to switch to fp32")
 
@@ -657,7 +659,7 @@ def main(args):
 
     model = TriviaQA(args)
 
-    logger = TestTubeLogger(
+    logger = TensorBoardLogger(
         save_dir=args.save_dir,
         name=args.save_prefix,
         version=0  # always use version=0
@@ -680,15 +682,14 @@ def main(args):
     print(f'>>>>>>> #steps: {args.steps}, #epochs: {args.epochs}, batch_size: {args.batch_size * num_devices} <<<<<<<')
 
     trainer = pl.Trainer(gpus=args.gpus, distributed_backend='ddp' if args.gpus and (len(args.gpus) > 1) else None,
-                         track_grad_norm=-1, max_nb_epochs=args.epochs, early_stop_callback=None,
+                         track_grad_norm=-1, max_epochs=args.epochs, early_stop_callback=None,
                          accumulate_grad_batches=args.batch_size,
                          val_check_interval=args.val_every,
                          val_percent_check=args.val_percent_check,
                          test_percent_check=args.val_percent_check,
                          logger=logger if not args.disable_checkpointing else False,
                          checkpoint_callback=checkpoint_callback if not args.disable_checkpointing else False,
-                         show_progress_bar=not args.no_progress_bar,
-                         use_amp=not args.fp32, amp_level='O2',
+                         precision=16 if not args.fp32 else 32,
                          )
     if not args.test:
         trainer.fit(model)
