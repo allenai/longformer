@@ -7,8 +7,12 @@ import multiprocessing
 import os
 import pathlib
 import random
+import string
 import time
+import gzip
+import json
 from builtins import NotImplementedError
+from collections import Counter
 
 import numpy as np
 import torch
@@ -35,27 +39,92 @@ except ImportError:
 else:
     TF_AVAILABLE = True
 
+try:
+    import pyarrow.parquet as pq
+    import pyspark
+    import pandas as pd
+    from fastparquet import ParquetFile
+except ImportError:
+    print("in order to process s2 data you will need to install pyarrow and pyspark")
+    print("in order to process s2 data you will need to install fastparquet, python-snappy (see python-snappy for dependencies)")
 
 tokenizer = None  # will be loaded later
 
+# only for s2 data
+ADDITIONAL_TOKENS = {
+    'section_start': '<|sec|>',
+    'section_end': '</|sec|>',
+    'section_title_start': '<|sec-title|>',
+    'section_title_end': '</|sec-title|>',
+    'abstract_start': '<|abs|>',
+    'abstract_end': '</|abs|>',
+    'title_start': '<|title|>',
+    'title_end': '</|title|>',
+    'sentence_sep': '<|sent|>',
+    'paragraph_sep': '<|par|>',
+}
+
+
+def classify_good_paragraph(text: str) -> int:
+    tokens = text.split(' ')
+    # No really short or really long sentences.
+    sentence_length = len(tokens)
+
+    # No words of length > 50.
+    word_lengths = [len(word) for word in tokens]
+    if any([x > 50 for x in word_lengths]):
+        return 2
+    # No sentences consisting of more than 50% < length 2 words.
+    num_short_words = len([x for x in word_lengths if x <= 2])
+    if num_short_words / sentence_length > 0.5:
+        return 3
+    # No sentences consisting of more than 40% completely uppercased words.
+    num_uppercase_words = len([x for x in tokens if x.isupper()])
+    if num_uppercase_words / sentence_length > 0.4:
+        return 4
+    # No more than 40% of the characters are punctuation
+    characters = Counter("".join(tokens))
+    char_count = sum(characters.values())
+    punct_count = sum([v for k, v in characters.items() if k in string.punctuation])
+    if (punct_count / char_count) > 0.4:
+        return 5
+    return 0
+
+
 # ========================= preprocessing code ========================= #
 def _process_file(full_fname, args):
-    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, model_max_length=args.seq_len)  # use_fast should be false for multiprocessing
-    "Step 1: tokenize an input text file then save token ids into `np.memmap` shards of size `args.shard_size`"
     fname = full_fname.split('/')[-1]
+    if args.data_type == 's2':
+        shared_filename = f'{args.output_dir}/{fname}.bin'
+        if os.path.exists(shared_filename) and not args.overwrite:
+            return
+    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, model_max_length=args.seq_len)  # use_fast should be false for multiprocessing
+    if args.data_type == 's2':
+        if args.add_structure:
+            additional_tokens = list(ADDITIONAL_TOKENS.values())
+            tokenizer.add_tokens(additional_tokens)
+    "Step 1: tokenize an input text file then save token ids into `np.memmap` shards of size `args.shard_size`"
+    
     if args.num_workers > 1:
         current = multiprocessing.current_process()
         process_identity = int(current._identity[0])
     else:
         process_identity = 1
 
-    logging.info(f'Processing {full_fname} ...')
+    if process_identity == 1:
+        logging.info(f'Processing {full_fname} ...')
     if args.data_type == 'tfrecord':
         fin = tf.data.TFRecordDataset(full_fname)
         log_filename = f'{args.output_dir}/logs-{fname}.log'
     elif args.data_type == 'raw_text':
         fin = open(full_fname, 'r')
         log_filename = f'{args.output_dir}/logs-{args.shard_size}/{fname}.log'
+    elif args.data_type == 's2':
+        fin = gzip.open(full_fname, 'rt')
+        log_filename = f'{args.output_dir}/logs-{fname}.log'
+        ADDITIONAL_TOKENS_IDS = {k: tokenizer.encode(v, add_special_tokens=False)[0] for k, v in ADDITIONAL_TOKENS.items()}
+        # NOTE: token id 1437, adding a space between title/abstract/sections when there is no structure in the doc
+        SPACE_SEPARATOR = tokenizer.encode('. ', add_special_tokens=False)[1]
     else:
         raise NotImplementedError
 
@@ -72,13 +141,13 @@ def _process_file(full_fname, args):
             return
         if token_list[-1] != tokenizer.sep_token_id:  # handle a rare case
             token_list.append(tokenizer.sep_token_id)
-        if args.data_type == 'tfrecord':
+        if args.data_type in ['tfrecord', 's2']:
             shared_filename = f'{args.output_dir}/{fname}.bin'
         elif args.data_type == 'raw_text':
             shared_filename = f'{args.output_dir}/shards-{args.shard_size}/{fname}-{shard_count}.bin'
         else:
             raise NotImplementedError
-        logging.info(f'Writing {len(token_list)} tokens to shared {shared_filename}')
+        logging.debug(f'Writing {len(token_list)} tokens to shared {shared_filename}')
         fp = np.memmap(shared_filename, dtype=np.uint16, mode='w+', shape=len(token_list))
         fp[:] = token_list[:]
         del fp  # flush and close file
@@ -115,6 +184,56 @@ def _process_file(full_fname, args):
                 tokens_count += len(token_list)
             shard_count += 1
         _write_shard()
+    elif args.data_type == 's2':  # input files are pyspark format
+        doc_count = 0
+        for line in tqdm(fin, disable=process_identity != 1):
+            json_obj = json.loads(line)
+            if not args.add_structure:
+                text = json_obj.get('title') or ''
+                text += ' ' + (json_obj.get('abstract') or '')
+                if json_obj["sections"]:
+                    for section_titles, section_text in zip(json_obj["section_titles"], json_obj["sections"]):
+                        text += (section_titles or "") + " "
+                        text += section_text
+
+            sections, section_titles = [], []
+            for i, section in enumerate(json_obj.get('sections') or []):
+                # filter bad sections
+                if args.drop_bad_section_prob > 0 and classify_good_paragraph(section) != 0:
+                    if random.random() < args.drop_bad_section_prob:
+                        continue
+                sections.append(tokenizer.encode(section, add_special_tokens=False))
+                section_titles.append(tokenizer.encode(json_obj['section_titles'][i] or '', add_special_tokens=False))
+
+            # skip the document if there is no body and no abstract
+            if len(sections) == 0 and not json_obj['abstract']:
+                continue
+
+            abstract = tokenizer.encode(json_obj.get('abstract') or '', add_special_tokens=False)
+            title = tokenizer.encode(json_obj.get('title') or '', add_special_tokens=False)
+
+            if args.add_structure:
+                tokens = [ADDITIONAL_TOKENS_IDS['title_start']] + title + [ADDITIONAL_TOKENS_IDS['title_end']]
+                tokens += [ADDITIONAL_TOKENS_IDS['abstract_start']] + abstract + [ADDITIONAL_TOKENS_IDS['abstract_end']]
+                for sec_ttl, sec in zip(section_titles, sections):
+                    tokens += [ADDITIONAL_TOKENS_IDS['section_title_start']] +\
+                        sec_ttl + [ADDITIONAL_TOKENS_IDS['section_title_end']] +\
+                        sec + [ADDITIONAL_TOKENS_IDS['section_end']]
+            else:
+                tokens = title + [SPACE_SEPARATOR] + abstract
+                for sec_ttl, sec in zip(section_titles, sections):
+                    tokens += [SPACE_SEPARATOR] + sec_ttl + [SPACE_SEPARATOR] + sec
+            if not tokens:  # drop empty lines
+                continue
+            if args.add_sep_after_doc:
+                tokens.append(tokenizer.sep_token_id)
+            token_list.extend(tokens)
+            doc_count += 1
+        _write_shard()
+        tokens_count += len(token_list)
+        token_list = []
+        fin.close()
+        print('avg doc len ', tokens_count / doc_count)
     else:
         raise NotImplementedError
 
@@ -125,9 +244,10 @@ def _process_file(full_fname, args):
 def _combine_shards(output_fname, shards_list):
     "Step 2: combining memmap shards into one `train.bin` or `val.bin` file"
     total_size = 0
+    correct = True
     for filename in shards_list:
         total_size += np.memmap(filename, mode='r', dtype=np.uint16).shape[0]
-    logging.info(f'Writing {total_size} tokens to {output_fname}')
+    logging.debug(f'Writing {total_size} tokens to {output_fname}')
     all_token_ids = np.empty(total_size, dtype=np.uint16)
     last_token_index = 0
     for filename in tqdm(shards_list):
@@ -200,6 +320,18 @@ def raw_text_to_mmap(args):
         val_shards = glob.glob(f'{args.output_dir}/*val*.bin')
         _combine_shards(f'{args.output_dir}/val.bin', val_shards)
         _combine_shards(f'{args.output_dir}/train.bin', train_shards)
+    elif args.data_type == 's2':
+        all_shards = glob.glob(f'{args.output_dir}/*.bin')
+        random.shuffle(all_shards)  # shuffling based on shards not individual lines
+        val_shards_count = int(args.train_dev_split * len(all_shards))
+        val_shards = all_shards[:val_shards_count]
+        train_shards = all_shards[val_shards_count:]
+        # TODO: if MMapTextDataset._combining_shards is very slow for large files, it can be skipped but we nned to
+        # update the dataset to read from multiple shards directly
+        _combine_shards(f'{args.output_dir}/val.bin', val_shards)
+        _combine_shards(f'{args.output_dir}/train.bin', train_shards)
+    else:
+        raise NotImplementedError
 
 # ========================= end preprocessing code ========================= #
 
@@ -211,7 +343,7 @@ def add_args(parser):
     parser.add_argument("--train_dev_split", type=float, default=0.05)
     parser.add_argument("--shard_size", type=int, default=1024 ** 3 // 4)  # 250MB
     parser.add_argument("--num_workers", type=int, default=1)
-    parser.add_argument("--seq_len", type=int, default=512)
+    parser.add_argument("--seq_len", type=int, default=32000)
     # Used only at the training phase
 
     # HF model loading
@@ -221,6 +353,10 @@ def add_args(parser):
     parser.add_argument("--add_sep_after_doc", action='store_true', default=False, help='add sep token after document')
 
     parser.add_argument("--data_type", default='raw_text', choices=['raw_text', 's2', 's2orc', 'tfrecord'])
+    parser.add_argument("--add_structure", action='store_true', default=False, help='add structure of the documents')
+    parser.add_argument("--drop_bad_section_prob", type=float, default=0.0, help='for s2 data, with certain probability drop bad paragraphs')
+    parser.add_argument("--overwrite", action='store_true', default=False, 
+                        help='overwrite existing processed files')
 
     return parser
 
