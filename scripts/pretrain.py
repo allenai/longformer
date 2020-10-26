@@ -158,7 +158,8 @@ class Pretrainer(ptl.LightningModule):
         elif self.use_tpu:
             avg_loss = xm.all_reduce(xm.REDUCE_SUM, avg_loss) / xm.xrt_world_size()
 
-        logs = {'val_mlm_loss': avg_loss}
+        bpc = avg_loss / math.log(2)
+        logs = {'val_mlm_loss': avg_loss, 'val_bpc': bpc}
         return {'log': logs, 'progress_bar': logs, "val_loss": avg_loss}
 
     def configure_optimizers(self):
