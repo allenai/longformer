@@ -76,7 +76,7 @@ class DistributedManager:
                 ssh_cmd = [
                     "scp",
                     "-i", self.private_key,
-                    "-oStrictHostKeyChecking=no",
+                    # "-oStrictHostKeyChecking=no",
                     src_file,
                     f"{host}:{dst_dir}"
                 ]
@@ -236,9 +236,9 @@ class DistributedManager:
         output = head_node_client.run_command(";".join(cmd))        
         self._process_output(output, [self.hosts[0]])
 
-    def mount_matthewp_models_head_node(self):
+    def mount_matthewp_models_head_node(self, disk_name='armanc-models1'):
         # first attach the disk to the head mode
-        self.attach_matthewp_models_head_node()
+        self.attach_matthewp_models_head_node(disk_name)
 
         # now mount it - this is just run on head node
         cmd = [
@@ -267,8 +267,8 @@ class DistributedManager:
         output = self.client.run_command(";".join(cmd))
         self._process_output(output)
 
-    def attach_disk(self, disk_name):
-        # attach disk_name to all nodes
+    def attach_or_detach_disk(self, disk_name, detach=False):
+        # attach (or detach) disk_name to (from) all nodes
         num_instances_in_group = len(self.hosts)
         cmd_get_insts_in_group = f'gcloud compute instance-groups list-instances {self.group} --zone europe-west4-a | grep {self.group} | tail -n {num_instances_in_group} | cut -f 1 -d " "'
         completed = subprocess.run(cmd_get_insts_in_group, shell=True, stdout=subprocess.PIPE)
@@ -276,18 +276,21 @@ class DistributedManager:
 
         # now attach the disk
         from tqdm.auto import tqdm
-        for node in tqdm(node_names, desc='attaching disks'):
-            cmd = f"gcloud compute instances attach-disk {node} --disk {disk_name} --zone europe-west4-a --mode='ro'"
+        for node in tqdm(node_names, desc='attaching/detaching disks'):
+            if detach:
+                cmd = f"gcloud compute instances detach-disk {node} --disk {disk_name} --zone europe-west4-a"
+            else:
+                cmd = f"gcloud compute instances attach-disk {node} --disk {disk_name} --zone europe-west4-a --mode='ro'"
             print("Running {}".format(cmd))
             completed = subprocess.run(cmd, shell=True)
 
 
-    def mount_disk_identify_by_size(self, disk_size=100, mount_point='/mnt/disk-pretrained-models/'):
+    def mount_disk_identify_by_size(self, disk_size='100G', mount_point='/mnt/disk-pretrained-models/'):
         " assumes disk_size is unique identifier"
         cmd = [
             # get the sb* location for mounting
             "sudo lsblk",
-            f'sb_loc=`sudo lsblk | grep {disk_size}G | cut -f 1 -d " "`',
+            f'sb_loc=`sudo lsblk | grep {disk_size} | cut -f 1 -d " "`',
             'echo "Got $sb_loc for mounting"',
             f"sudo mkdir -p {mount_point}",
             f"sudo chmod ugo+w {mount_point}",
@@ -298,15 +301,15 @@ class DistributedManager:
         self._process_output(output)
 
 
-    def attach_matthewp_models_head_node(self):
+    def attach_matthewp_models_head_node(self, disk_name='armanc-models1'):
         # get the head node name and attach the disk
         head_node_name_cmd = 'gcloud compute instance-groups list-instances {} --zone europe-west4-a | grep {} | head -n 1 | cut -f 1 -d " "'.format(self.group, self.group)
         completed = subprocess.run(head_node_name_cmd, shell=True, stdout=subprocess.PIPE)
         head_node_name = completed.stdout.decode('utf-8').strip()
 
         # now attach the disk
-        cmd = "gcloud compute instances attach-disk {} --disk armanc-models1 --zone europe-west4-a".format(head_node_name)
-        print("Running {}".format(cmd))
+        cmd = f"gcloud compute instances attach-disk {head_node_name} --disk {disk_name} --zone europe-west4-a"
+        print(f"Running {cmd}")
         completed = subprocess.run(cmd, shell=True)
 
     def copy_file(self, file_path, dest_dir):
@@ -316,16 +319,16 @@ class DistributedManager:
         head_node_ip = self.hosts[0]
         self._parallel_shell_scp(file_path, dest_path, self.hosts[1:], head_node_ip=head_node_ip)
 
-    def copy_file_head_node_other_nodes(self, file_path, dest_path):
-        # copy a file in file_dir/file_name from the head node to all other nodes
-        # to do so, run scp from every machine except the head node
-        head_node_ip = self.hosts[0]
-        import pathlib
-        cmd = [
-            "mkdir -p {}".format(str(pathlib.Path(dest_path).parent)),
-            "scp -oStrictHostKeyChecking=no {}:{} {}".format(head_node_ip, file_path, dest_path)
-        ]
-        self._parallel_shell_ssh(cmd, self.hosts[1:], 4)
+    # def copy_file_head_node_other_nodes(self, file_path, dest_path):
+    #     # copy a file in file_dir/file_name from the head node to all other nodes
+    #     # to do so, run scp from every machine except the head node
+    #     head_node_ip = self.hosts[0]
+    #     import pathlib
+    #     cmd = [
+    #         "mkdir -p {}".format(str(pathlib.Path(dest_path).parent)),
+    #         "scp -oStrictHostKeyChecking=no {}:{} {}".format(head_node_ip, file_path, dest_path)
+    #     ]
+    #     self._parallel_shell_ssh(cmd, self.hosts[1:], 4)
 
     def upgrade_transformers(self):
         cmd = [
@@ -335,13 +338,16 @@ class DistributedManager:
         ]
         self._parallel_shell_ssh(cmd, self.hosts)
 
-    def upgrade_wheels(self):
+    def upgrade_wheels(self, copy_upgrade_script=True):
         cmd = [
             'cd /usr/share/torch-xla-nightly/pytorch/xla',
-            'export PATH=/anaconda3/bin/:$PATH',
             '. ./scripts/update_nightly_torch_wheels.sh',
             'echo "wheels upgraded"'
         ]
+        if copy_upgrade_script:
+            print('first copying script')
+            self.copy_file('/Users/armanc/code/longformer/scripts/update_nightly_torch_wheels.sh', '/usr/share/torch-xla-nightly/pytorch/xla/scripts/')
+            self.copy_file('/Users/armanc/code/longformer/scripts/update_torch_wheels.sh', '/usr/share/torch-xla-nightly/pytorch/xla/scripts/')
         self._parallel_shell_ssh(cmd, self.hosts)
 
     def _process_output(self, output, hosts=None):
