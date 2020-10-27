@@ -89,7 +89,7 @@ class Pretrainer(ptl.LightningModule):
             init_embed_size = self.model.lm_head.decoder.weight.shape[0]
             target_embed_size = init_embed_size + 10  # len(ADDITIONAL_TOKENS) for s2 data
             logger.info(f'increasing model embedding dim from: {init_embed_size} to {target_embed_size}')
-            self.model.resize_token_embeddings(init_embed_size)
+            self.model.resize_token_embeddings(target_embed_size)
             logger.info(f'new embed size: {self.model.lm_head.decoder.weight.shape[0]}\n\n\n')
         self.config = self.model.config
         tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
