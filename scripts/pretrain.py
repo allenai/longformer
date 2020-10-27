@@ -85,6 +85,12 @@ class Pretrainer(ptl.LightningModule):
                 layer.attention.self.attention_window = args.attention_window
         else:
             self.model = AutoModelForMaskedLM.from_pretrained(args.model)
+        if self.args.resize_token_embeddings:
+            init_embed_size = self.model.lm_head.decoder.weight.shape[0]
+            target_embed_size = init_embed_size + 10  # len(ADDITIONAL_TOKENS) for s2 data
+            logger.info(f'increasing model embedding dim from: {init_embed_size} to {target_embed_size}')
+            self.model.resize_token_embeddings(init_embed_size)
+            logger.info(f'new embed size: {self.model.lm_head.decoder.weight.shape[0]}\n\n\n')
         self.config = self.model.config
         tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
         self.pad_token_id = tokenizer.pad_token_id
@@ -305,6 +311,8 @@ class Pretrainer(ptl.LightningModule):
                             help="Number of nodes. It needs to match --nnodes of torch.distributed.launch")
         parser.add_argument("--tpu_core_count", type=int, default=None)
         parser.add_argument("--process_spawn_delay", type=int, default=0)
+
+        parser.add_argument("--resize_token_embeddings", default=False, action='store_true', help='used for s2 data with additional vocabulary.')
 
         return parser
 
