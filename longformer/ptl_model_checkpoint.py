@@ -259,6 +259,8 @@ class ModelCheckpoint(Callback):
             if self.verbose > 0:
                 _log(f'\nEpoch {epoch:05d}: saving model to {filepath}')
             self._save_model(filepath)
+        if XLA_AVAILABLE:
+            xm.rendezvous('end_of-validation_end')
 
     def _do_check_save(self, filepath, current, epoch):
         # remove kth
