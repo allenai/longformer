@@ -170,6 +170,8 @@ class ModelCheckpoint(Callback):
             self.save_function(filepath)
         else:
             raise ValueError(".save_function() not set")
+        if XLA_AVAILABLE:
+            xm.rendezvous('model saved')
 
     def check_monitor_top_k(self, current):
         less_than_k_models = len(self.best_k_models) < self.save_top_k
@@ -259,8 +261,6 @@ class ModelCheckpoint(Callback):
             if self.verbose > 0:
                 _log(f'\nEpoch {epoch:05d}: saving model to {filepath}')
             self._save_model(filepath)
-        if XLA_AVAILABLE:
-            xm.rendezvous('end_of-validation_end')
 
     def _do_check_save(self, filepath, current, epoch):
         # remove kth
