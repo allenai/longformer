@@ -292,4 +292,5 @@ class ModelCheckpoint(Callback):
                 _log(f'deleting oldest file: {cur_path}')
                 if cur_path != filepath:
                     self._del_model(cur_path)
-            _log(f'done deleting: {cur_path}')
+                _log(f'done deleting: {cur_path}')
+            _log('existing _do_check_save')
