@@ -261,6 +261,7 @@ class ModelCheckpoint(Callback):
             if self.verbose > 0:
                 _log(f'\nEpoch {epoch:05d}: saving model to {filepath}')
             self._save_model(filepath)
+        _log(f'\nexisting validation_end')
 
     def _do_check_save(self, filepath, current, epoch):
         # remove kth
