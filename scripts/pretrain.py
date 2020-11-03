@@ -48,7 +48,7 @@ class MMapTextDataset(Dataset):
         self._chunk_size = chunk_size - 2
         # add additional <s> for global attention, default is 1 bos_token as in bert
         self._chunk_size -= num_global_tokens
-        self.num_instances = np.memmap(mmap_filename, mode='r', dtype=np.uint16).shape[0] // (self._chunk_size - 2)
+        self.num_instances = np.memmap(mmap_filename, mode='r', dtype=np.uint16).shape[0] // (self._chunk_size)
         # defer loading the token_ids memmap until after the first __getitem__ call.
         # when spawning new processes for ddp, there is a hard limit in python < 3.8 that
         # pickle files need to be < 4GB. By waiting until after the first __getitem__ we
