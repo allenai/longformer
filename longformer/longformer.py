@@ -116,10 +116,11 @@ class LongformerSelfAttention(nn.Module):
         if XLA_AVAILABLE:
             attention_mask = None  # disable global attention and masking for TPUs
 
-        if getattr(self, 'global_tokens', 0) > 0:  # global tokens at the beginning of the sequence
-            assert attention_mask is None  # no attention_mask is provided (no padding, no global attention selected tokens)
+        # if getattr(self, 'global_tokens', 0) > 0:  # global tokens at the beginning of the sequence
+        #     import ipdb; ipdb.set_trace()
+        #     assert attention_mask is None  # no attention_mask is provided (no padding, no global attention selected tokens)
 
-        if attention_mask is not None:
+        if attention_mask is not None and getattr(self, 'global_tokens', 0) == 0:
             attention_mask = attention_mask.squeeze(dim=2).squeeze(dim=1)
             key_padding_mask = attention_mask < 0
             extra_attention_mask = attention_mask > 0
@@ -147,7 +148,6 @@ class LongformerSelfAttention(nn.Module):
             remove_from_windowed_attention_mask = None
             extra_attention_mask = None
             key_padding_mask = None
-
         hidden_states = hidden_states.transpose(0, 1)
         seq_len, bsz, embed_dim = hidden_states.size()
         assert embed_dim == self.embed_dim
@@ -204,8 +204,15 @@ class LongformerSelfAttention(nn.Module):
             # (bsz, seq_len, num_heads, extra attention count + 2*window+1)
             attn_weights = torch.cat((selected_attn_weights, attn_weights), dim=-1)
         if getattr(self, 'global_tokens', 0) > 0:
+            q_g = self.query_global(hidden_states)
+            k_g = self.key_global(hidden_states)
+            v_g = self.value_global(hidden_states)
+            q_g = q_g.contiguous().view(seq_len, bsz, self.num_heads, self.head_dim).transpose(0, 1)
+            k_g = k_g.contiguous().view(seq_len, bsz, self.num_heads, self.head_dim).transpose(0, 1)
+            v_g = v_g.contiguous().view(seq_len, bsz, self.num_heads, self.head_dim).transpose(0, 1)
+
             # (bsz, seq_len, num_heads, max_num_extra_indices_per_batch)
-            selected_attn_weights = torch.einsum('blhd,bshd->blhs', (q, k[:, :self.global_tokens]))
+            selected_attn_weights = torch.einsum('blhd,bshd->blhs', (q_g, k_g[:, :self.global_tokens]))
             attn_weights = torch.cat((selected_attn_weights, attn_weights), dim=-1)
 
         attn_weights_float = F.softmax(attn_weights, dim=-1, dtype=torch.float32)  # use fp32 for numerical stability
@@ -227,7 +234,7 @@ class LongformerSelfAttention(nn.Module):
             attn_probs = attn_probs.narrow(-1, max_num_extra_indices_per_batch, attn_probs.size(-1) - max_num_extra_indices_per_batch).contiguous()
         if getattr(self, 'global_tokens', 0) > 0:
             selected_attn_probs = attn_probs.narrow(-1, 0, self.global_tokens)
-            selected_v = v[:, :self.global_tokens]
+            selected_v = v_g[:, :self.global_tokens]  # v_g has been only computed for global_tokens
             attn = torch.matmul(selected_attn_probs.transpose(1, 2), selected_v.transpose(1, 2).type_as(selected_attn_probs)).transpose(1, 2)
             attn_probs = attn_probs.narrow(-1, self.global_tokens, attn_probs.size(-1) - self.global_tokens).contiguous()
 
@@ -283,11 +290,12 @@ class LongformerSelfAttention(nn.Module):
 
         if getattr(self, 'global_tokens', 0) > 0:
             assert not self.use_global_proj  # TODO: support the use of global projections
-            attn_weights = torch.einsum('blhd,bshd->blhs', (q[:, :self.global_tokens], k))
+            attn_weights = torch.einsum('blhd,bshd->blhs', (q_g[:, :self.global_tokens], k_g))
             attn_weights_float = F.softmax(attn_weights, dim=-1, dtype=torch.float32)  # use fp32 for numerical stability
             attn_probs = F.dropout(attn_weights_float.type_as(attn_weights), p=self.dropout, training=self.training)
-            selected_attn = torch.matmul(attn_probs.transpose(1, 2), v.transpose(1, 2))
-            attn[:self.global_tokens] = selected_attn.permute(2, 0, 1, 3).view(self.global_tokens, bsz, -1)
+            selected_attn = torch.matmul(attn_probs.transpose(1, 2), v_g.transpose(1, 2))
+            # .view throws error (view size is not compatible with input tensor's size and stride)
+            attn[:self.global_tokens] = selected_attn.permute(2, 0, 1, 3).reshape(self.global_tokens, bsz, -1)
 
         context_layer = attn.transpose(0, 1)
         if output_attentions:
