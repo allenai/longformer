@@ -116,10 +116,6 @@ class LongformerSelfAttention(nn.Module):
         if XLA_AVAILABLE:
             attention_mask = None  # disable global attention and masking for TPUs
 
-        # if getattr(self, 'global_tokens', 0) > 0:  # global tokens at the beginning of the sequence
-        #     import ipdb; ipdb.set_trace()
-        #     assert attention_mask is None  # no attention_mask is provided (no padding, no global attention selected tokens)
-
         if attention_mask is not None and getattr(self, 'global_tokens', 0) == 0:
             attention_mask = attention_mask.squeeze(dim=2).squeeze(dim=1)
             key_padding_mask = attention_mask < 0
