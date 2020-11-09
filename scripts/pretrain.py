@@ -65,8 +65,8 @@ class MMapTextDataset(Dataset):
     def __getitem__(self, i):
         if self.token_ids is None:
             self.token_ids = np.memmap(self._mmap_filename, mode='r', dtype=np.uint16)
-        from_index = i * (self._chunk_size - 2)
-        to_index = (i + 1) * (self._chunk_size - 2)
+        from_index = i * (self._chunk_size)
+        to_index = (i + 1) * (self._chunk_size)
         bos_tokens = [self._bos_token_id for _ in range(self.num_global_tokens + 1)]
         data = np.concatenate((bos_tokens, self.token_ids[from_index:to_index], [self._eos_token_id]))
         return torch.tensor(data, dtype=torch.long)
