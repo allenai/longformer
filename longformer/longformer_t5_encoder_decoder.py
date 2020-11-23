@@ -277,8 +277,9 @@ class LongformerSelfAttentionT5Basic(nn.Module):
             if past_key_value_state is not None:
                 position_bias = position_bias[:, :, -1:, :]
 
-            if attention_mask is not None:
-                position_bias = position_bias + attention_mask  # (1, num_heads, seq_len, 2*window+1)
+            # attention_mask is not the right size; should it even be added?
+            # if attention_mask is not None:
+            #     position_bias = position_bias + attention_mask  # (1, num_heads, seq_len, 2*window+1)
 
         attn_weights += position_bias
 
