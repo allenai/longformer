@@ -38,7 +38,7 @@ class LongformerEncoderDecoderConfigT5(T5Config):
         self.autoregressive = autoregressive
         self.attention_mode = attention_mode
         self.gradient_checkpointing = gradient_checkpointing
-        # self.attention_probs_dropout_prob = self.dropout_rate
+        self.attention_probs_dropout_prob = self.dropout_rate
         assert self.attention_mode in ['tvm', 'sliding_chunks', 'n2']
 
 class LongformerSelfAttentionT5Basic(nn.Module):
@@ -129,6 +129,26 @@ class LongformerSelfAttentionT5Basic(nn.Module):
         ret += torch.where(is_small, n, val_if_large)
         return ret
 
+    @staticmethod
+    def _smaller_score_matrix(matrix, seq_len, w, bidirectional):
+
+        diag_sums = torch.zeros(seq_len, 2*w+1)
+        #diag_sums.fill_(float('-inf'))
+        last = w+1 if bidirectional else 1
+
+        c = 0
+        for k in range(-w, last):
+            d = torch.diagonal(matrix, offset=k, dim1=-2, dim2=-1)
+            if d.nelement():
+                if k <= 0:
+                    diag_sums[abs(k):seq_len, c] = d
+                else:
+                    diag_sums[0:seq_len-k, c] = d
+            c += 1
+        
+        # mask_invalid_locations(diag_sums.unsqueeze(0).unsqueeze(2).float(), w, 1, True)
+        return diag_sums.long()
+
     def compute_bias(self, qlen, klen):
         """ Compute binned relative position bias """
         context_position = torch.arange(qlen, dtype=torch.long)[:, None]
@@ -139,9 +159,10 @@ class LongformerSelfAttentionT5Basic(nn.Module):
             bidirectional=not self.is_decoder,
             num_buckets=self.relative_attention_num_buckets,
         )
+        rp_bucket = self._smaller_score_matrix(rp_bucket, qlen, w=self.attention_window, bidirectional=not self.is_decoder)
         rp_bucket = rp_bucket.to(self.relative_attention_bias.weight.device)
         values = self.relative_attention_bias(rp_bucket)  # shape (qlen, klen, num_heads)
-        # values = values.permute([2, 0, 1]).unsqueeze(0)  # shape (1, num_heads, qlen, klen)
+#         values = values.permute([2, 0, 1]).unsqueeze(0)  # shape (1, num_heads, qlen, klen)
         # Changing the shape to below because that's what LongformerSelfAttention's attn_weights need.
         values = values.permute([0, 2, 1]).unsqueeze(0) # shape (1, qlen, num_heads, klen)
         return values
@@ -245,23 +266,20 @@ class LongformerSelfAttentionT5Basic(nn.Module):
             # (bsz, seq_len, num_heads, extra attention count + 2*window+1)
             attn_weights = torch.cat((selected_attn_weights, attn_weights), dim=-1)
 
-        # TODO: added position_bias for T5
         if position_bias is None:
             if not self.has_relative_attention_bias:
                 raise ValueError("No position_bias provided and no weights to compute position_bias")
             
-            position_bias = self.compute_bias(seq_len, 2*self.attention_window + 1)
+            position_bias = self.compute_bias(seq_len, seq_len)
 
             # if key and values are already calculated
             # we want only the last query position bias
             if past_key_value_state is not None:
                 position_bias = position_bias[:, :, -1:, :]
 
-            # TODO: what should be the attn_mask added here?
-            # if attention_mask is not None:
-            #     position_bias = position_bias + attention_mask  # (1, num_heads, seq_len, 2*window+1)
+            if attention_mask is not None:
+                position_bias = position_bias + attention_mask  # (1, num_heads, seq_len, 2*window+1)
 
-        # ipdb.set_trace()
         attn_weights += position_bias
 
         attn_weights_float = F.softmax(attn_weights, dim=-1, dtype=torch.float32)  # use fp32 for numerical stability
@@ -356,16 +374,6 @@ class LongformerSelfAttentionForT5(nn.Module):
             has_relative_attention_bias=True) #config.has_relative_attention_bias)
         self.output = nn.Linear(self.embed_dim, self.embed_dim)
 
-    # def forward(
-    #     self,
-    #     query,
-    #     key: Optional[Tensor],
-    #     key_padding_mask: Optional[Tensor] = None,
-    #     layer_state: Optional[Dict[str, Optional[Tensor]]] = None,
-    #     attn_mask: Optional[Tensor] = None,
-    #     need_weights=False,
-    #     output_attentions=False,
-    # ) -> Tuple[Tensor, Optional[Tensor]]:
     def forward(
         self,
         query,
