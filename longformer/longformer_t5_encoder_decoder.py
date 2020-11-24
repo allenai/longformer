@@ -108,12 +108,17 @@ class LongformerSelfAttentionT5Basic(nn.Module):
         """
         ret = 0
         n = -relative_position
+        # Since torch.abs() will not work correctly with converted inf values, explicitly set to a lower value.
+        # TODO: check this!!
+        n[n==float('inf')] = max_distance
+        n[n==float('-inf')] = -max_distance
         if bidirectional:
             num_buckets //= 2
             ret += (n < 0).to(torch.long) * num_buckets  # mtf.to_int32(mtf.less(n, 0)) * num_buckets
             n = torch.abs(n)
         else:
             n = torch.max(n, torch.zeros_like(n))
+        n = n.long()
         # now n is in the range [0, inf)
 
         # half of the buckets are for exact increments in positions
@@ -134,6 +139,8 @@ class LongformerSelfAttentionT5Basic(nn.Module):
 
         diag_sums = torch.zeros(seq_len, 2*w+1)
         #diag_sums.fill_(float('-inf'))
+        diag_sums[:, 0:w].fill_(float('-inf'))
+        diag_sums[:, w+1:].fill_(float('inf'))
         last = w+1 if bidirectional else 1
 
         c = 0
@@ -147,19 +154,19 @@ class LongformerSelfAttentionT5Basic(nn.Module):
             c += 1
         
         # mask_invalid_locations(diag_sums.unsqueeze(0).unsqueeze(2).float(), w, 1, True)
-        return diag_sums.long()
+        return diag_sums
 
     def compute_bias(self, qlen, klen):
         """ Compute binned relative position bias """
         context_position = torch.arange(qlen, dtype=torch.long)[:, None]
         memory_position = torch.arange(klen, dtype=torch.long)[None, :]
         relative_position = memory_position - context_position  # shape (qlen, klen)
+        relative_position = self._smaller_score_matrix(relative_position, qlen, w=self.attention_window, bidirectional=not self.is_decoder)
         rp_bucket = self._relative_position_bucket(
             relative_position,  # shape (qlen, klen)
             bidirectional=not self.is_decoder,
             num_buckets=self.relative_attention_num_buckets,
         )
-        rp_bucket = self._smaller_score_matrix(rp_bucket, qlen, w=self.attention_window, bidirectional=not self.is_decoder)
         rp_bucket = rp_bucket.to(self.relative_attention_bias.weight.device)
         values = self.relative_attention_bias(rp_bucket)  # shape (qlen, klen, num_heads)
 #         values = values.permute([2, 0, 1]).unsqueeze(0)  # shape (1, num_heads, qlen, klen)
