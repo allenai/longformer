@@ -42,6 +42,20 @@ from transformers.optimization import (
 TEXT_FIELD_NAME = 'text'
 LABEL_FIELD_NAME = 'label'
 
+# If using a s2 trained model
+ADDITIONAL_TOKENS = {
+    'section_start': '<|sec|>',
+    'section_end': '</|sec|>',
+    'section_title_start': '<|sec-title|>',
+    'section_title_end': '</|sec-title|>',
+    'abstract_start': '<|abs|>',
+    'abstract_end': '</|abs|>',
+    'title_start': '<|title|>',
+    'title_end': '</|title|>',
+    'sentence_sep': '<|sent|>',
+    'paragraph_sep': '<|par|>',
+}
+
 arg_to_scheduler = {
     "linear": get_linear_schedule_with_warmup,
     "cosine": get_cosine_schedule_with_warmup,
@@ -128,9 +142,16 @@ class LongformerClassifier(pl.LightningModule):
         config = LongformerConfig.from_pretrained(config_path)
         config.attention_mode = init_args.attention_mode
         logger.info(f'attention mode set to {config.attention_mode}')
+        if getattr(init_args, 'attention_window', False):
+            config.attention_window = [init_args.attention_window for _ in range(config.num_hidden_layers)]
+            logger.info(f'attention window set to {config.attention_window}')
         self.model_config = config
         self.model = Longformer.from_pretrained(checkpoint_path, config=config)
         self.tokenizer = RobertaTokenizer.from_pretrained(init_args.tokenizer)
+        if init_args.add_tokens:
+            # TODO: change this when tokenizer is also changed
+            additional_tokens = list(ADDITIONAL_TOKENS.values())
+            self.tokenizer.add_tokens(additional_tokens)
         self.tokenizer.model_max_length = self.model.config.max_position_embeddings
         self.hparams = init_args
         self.hparams.seqlen = self.model.config.max_position_embeddings
@@ -184,7 +205,6 @@ class LongformerClassifier(pl.LightningModule):
     def test_dataloader(self):
         return self._get_loader('test')
 
-    @property
     def total_steps(self) -> int:
         """The number of total training steps that will be run. Used for lr scheduler purposes."""
         num_devices = max(1, self.hparams.total_gpus)  # TODO: consider num_tpu_cores
@@ -195,7 +215,7 @@ class LongformerClassifier(pl.LightningModule):
     def get_lr_scheduler(self):
         get_schedule_func = arg_to_scheduler[self.hparams.lr_scheduler]
         scheduler = get_schedule_func(
-            self.opt, num_warmup_steps=self.hparams.warmup_steps, num_training_steps=self.total_steps
+            self.opt, num_warmup_steps=self.hparams.warmup_steps, num_training_steps=self.total_steps()
         )
         scheduler = {"scheduler": scheduler, "interval": "step", "frequency": 1}
         return scheduler
@@ -322,7 +342,9 @@ def parse_args():
     parser.add_argument('--num_labels', default=-1, type=int,
         help='if -1, it automatically finds number of labels.'
         'for larger datasets precomute this and manually set')
+    parser.add_argument('--attention_window', default=None, type=int)
     parser.add_argument('--num_samples', default=None, type=int)
+    parser.add_argument('--add_tokens', default=False, action='store_true', help='set True if model pretraining includes s2 data.')
     parser.add_argument("--lr_scheduler",
         default="linear",
         choices=arg_to_scheduler_choices,
