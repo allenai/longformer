@@ -1,6 +1,7 @@
 import argparse
 import logging
 import os
+import copy
 
 from transformers import BartTokenizer
 
@@ -73,9 +74,9 @@ def create_long_model(
         longformer_self_attn_for_bart.longformer_self_attn.key = layer.self_attn.k_proj
         longformer_self_attn_for_bart.longformer_self_attn.value = layer.self_attn.v_proj
 
-        longformer_self_attn_for_bart.longformer_self_attn.query_global = layer.self_attn.q_proj
-        longformer_self_attn_for_bart.longformer_self_attn.key_global = layer.self_attn.k_proj
-        longformer_self_attn_for_bart.longformer_self_attn.value_global = layer.self_attn.v_proj
+        longformer_self_attn_for_bart.longformer_self_attn.query_global = copy.deepcopy(layer.self_attn.q_proj)
+        longformer_self_attn_for_bart.longformer_self_attn.key_global = copy.deepcopy(layer.self_attn.k_proj)
+        longformer_self_attn_for_bart.longformer_self_attn.value_global = copy.deepcopy(layer.self_attn.v_proj)
 
         longformer_self_attn_for_bart.output = layer.self_attn.out_proj
 
