@@ -4,20 +4,22 @@ import argparse
 import json
 import string
 import random
+import pathlib
 import numpy as np
 import torch
 from torch.optim.lr_scheduler import LambdaLR
 
 from torch.utils.data import DataLoader, Dataset
 from transformers import RobertaTokenizer
+from transformers.optimization import get_linear_schedule_with_warmup
 from scripts.triviaqa_utils import evaluation_utils
 
 import pytorch_lightning as pl
-from pytorch_lightning.logging import TestTubeLogger
+from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.overrides.data_parallel import LightningDistributedDataParallel
 
-from longformer.longformer import Longformer
+from longformer.longformer import Longformer, LongformerConfig
 from longformer.sliding_chunks import pad_to_window_size
 
 
@@ -263,7 +265,10 @@ class TriviaQA(pl.LightningModule):
         self.train_dataloader_object = self.val_dataloader_object = self.test_dataloader_object = None
 
     def load_model(self):
-        model = Longformer.from_pretrained(self.args.model_path)
+        config_path = self.args.config_path or self.args.model_dir
+        checkpoint_path = self.args.checkpoint_path or self.args.model_dir
+        config = LongformerConfig.from_pretrained(config_path)
+        model = Longformer.from_pretrained(checkpoint_path, config=config)
         for layer in model.encoder.layer:
             layer.attention.self.attention_mode = self.args.attention_mode
             self.args.attention_window = layer.attention.self.attention_window
@@ -459,7 +464,7 @@ class TriviaQA(pl.LightningModule):
         torch.distributed.all_gather(gather_l_tensor, l_tensor)
         return torch.cat(gather_l_tensor).tolist()
 
-    def validation_end(self, outputs):
+    def validation_epoch_end(self, outputs):
         avg_loss = torch.stack([x['vloss'] for x in outputs]).mean()
         avg_em = torch.stack([x['vem'] for x in outputs]).mean()
         string_qids = [item for sublist in outputs for item in sublist['qids']]
@@ -491,8 +496,8 @@ class TriviaQA(pl.LightningModule):
             top_answer = sorted(answer_metrics, key=lambda x: x['answer_score'], reverse=True)[0]
             f1_scores.append(top_answer['f1'])
             em_scores.append(top_answer['em'])
-        avg_val_f1 = sum(f1_scores) / len(f1_scores)
-        avg_val_em = sum(em_scores) / len(em_scores)
+        avg_val_f1 = torch.tensor(sum(f1_scores) / len(f1_scores), device='cpu')
+        avg_val_em = torch.tensor(sum(em_scores) / len(em_scores), device='cpu')
 
         logs = {'val_loss': avg_loss, 'val_em': avg_em, 'avg_val_f1': avg_val_f1, 'avg_val_em': avg_val_em}
 
@@ -523,15 +528,48 @@ class TriviaQA(pl.LightningModule):
             top_answer = sorted(answer_metrics, key=lambda x: x['answer_score'], reverse=True)[0]
             qid_to_answer_text[qid] = top_answer['answer_text']
 
-        with open('predictions.json', 'w') as f:
-            json.dump(qid_to_answer_text, f)
+
+        pathlib.Path(args.test_output_dir).mkdir(parents=True, exist_ok=True)
+
+        if self.trainer.use_ddp:
+            # create intermediate files for each worker output
+            predictions_file = self.args.test_output_dir + f'/prediction-output_rank-{self.trainer.proc_rank}.json'
+            with open(predictions_file, 'w') as f_out:
+                json.dump(qid_to_answer_text, f_out)
+
+            torch.distributed.barrier()
+            if self.trainer.proc_rank == 0:
+                all_predictions = {}
+                for rank in range(self.trainer.world_size):
+                    with open(self.args.test_output_dir + f'/prediction-output_rank-{rank}.json') as fin:
+                        preds = json.load(fin)
+                        all_predictions.update(preds)
+                predictions_file = self.args.test_output_dir + f'/prediction-output.json'
+                with open(predictions_file, 'w') as f:
+                    json.dump(all_predictions, f)
+                qid_to_answer_text = all_predictions
+        else:
+            predictions_file = self.args.test_output_dir + f'/prediction-output.json'
+            with open(predictions_file, 'w') as f:
+                json.dump(qid_to_answer_text, f)
 
         return {'count': len(qid_to_answer_text)}
 
-    def optimizer_step(self, current_epoch, batch_nb, optimizer, optimizer_i, second_order_closure=None):
-        optimizer.step()
-        optimizer.zero_grad()
-        self.scheduler.step(self.global_step)
+    @property
+    def total_steps(self) -> int:
+        """The number of total training steps that will be run. Used for lr scheduler purposes."""
+        num_devices = max(1, len(self.args.gpus))  # TODO: consider num_tpu_cores
+        effective_batch_size = self.args.batch_size * num_devices  # batch-size == grad_accum
+        dataset_size = 110648  # num training examples
+        print(f'devices: {num_devices}, effecive_batch_size: {effective_batch_size}')
+        return (dataset_size / effective_batch_size) * self.args.epochs
+
+    def get_lr_scheduler(self):
+        scheduler = get_linear_schedule_with_warmup(
+            self.optimizer, num_warmup_steps=self.args.warmup, num_training_steps=self.total_steps
+        )
+        scheduler = {"scheduler": scheduler, "interval": "step", "frequency": 1}
+        return scheduler
 
     def configure_optimizers(self):
         def lr_lambda(current_step):
@@ -539,12 +577,11 @@ class TriviaQA(pl.LightningModule):
                 return float(current_step) / float(max(1, self.args.warmup))
             return max(0.0, float(self.args.steps - current_step) / float(max(1, self.args.steps - self.args.warmup)))
         optimizer = torch.optim.Adam(self.parameters(), lr=self.args.lr)
-        self.scheduler = LambdaLR(optimizer, lr_lambda, last_epoch=-1)  # scheduler is not saved in the checkpoint, but global_step is, which is enough to restart
-        self.scheduler.step(self.global_step)
+        self.optimizer = optimizer
+        scheduler = LambdaLR(optimizer, lr_lambda, last_epoch=-1)  # scheduler is not saved in the checkpoint, but global_step is, which is enough to restart
+        scheduler = self.get_lr_scheduler()
+        return [optimizer], [scheduler]
 
-        return optimizer
-
-    @pl.data_loader
     def train_dataloader(self):
         if self.train_dataloader_object is not None:
             return self.train_dataloader_object
@@ -554,14 +591,12 @@ class TriviaQA(pl.LightningModule):
                                   max_num_answers=self.args.max_num_answers,
                                   max_question_len=self.args.max_question_len,
                                   ignore_seq_with_no_answers=self.args.ignore_seq_with_no_answers)
-        sampler = torch.utils.data.distributed.DistributedSampler(dataset) if self.trainer.use_ddp else None
-        dl = DataLoader(dataset, batch_size=1, shuffle=(sampler is None),
-                        num_workers=self.args.num_workers, sampler=sampler,
+        dl = DataLoader(dataset, batch_size=1, shuffle=True,
+                        num_workers=self.args.num_workers,
                         collate_fn=TriviaQADataset.collate_one_doc_and_lists)
         self.train_dataloader_object = dl
         return self.train_dataloader_object
 
-    @pl.data_loader
     def val_dataloader(self):
         if self.val_dataloader_object is not None:
             return self.val_dataloader_object
@@ -571,14 +606,12 @@ class TriviaQA(pl.LightningModule):
                                   max_num_answers=self.args.max_num_answers,
                                   max_question_len=self.args.max_question_len,
                                   ignore_seq_with_no_answers=False)  # evaluation data should keep all examples
-        sampler = torch.utils.data.distributed.DistributedSampler(dataset) if self.trainer.use_ddp else None
-        dl = DataLoader(dataset, batch_size=1, shuffle=(sampler is None),
-                        num_workers=self.args.num_workers, sampler=sampler,
+        dl = DataLoader(dataset, batch_size=1, shuffle=False,
+                        num_workers=self.args.num_workers,
                         collate_fn=TriviaQADataset.collate_one_doc_and_lists)
         self.val_dataloader_object = dl
         return self.val_dataloader_object
 
-    @pl.data_loader
     def test_dataloader(self):
         if self.test_dataloader_object is not None:
             return self.test_dataloader_object
@@ -638,10 +671,13 @@ class TriviaQA(pl.LightningModule):
                             help="maximum num of wordpieces/answer. Used at decoding time")
         parser.add_argument("--regular_softmax_loss", action='store_true', help="IF true, use regular softmax. Default is using ORed softmax loss")
         parser.add_argument("--test", action='store_true', help="Test only, no training")
-        parser.add_argument("--model_path", type=str, required=True,
-                            help="Path to the checkpoint directory")
+        parser.add_argument("--test_checkpoint", default=None, help="Test only, provide checkpoint to test")        
+        parser.add_argument("--test_output_dir", default='./', help="dir to write output")        
+        parser.add_argument('--model_dir', dest='model_dir', default='longformer-base-4096/', help='path to the model')
+        parser.add_argument('--config_path', default=None, help='path to the config (if not setting dir)')
+        parser.add_argument('--checkpoint_path', default=None, help='path to the model (if not setting checkpoint)')        
         parser.add_argument("--no_progress_bar", action='store_true', help="no progress bar. Good for printing")
-        parser.add_argument("--attention_mode", type=str, choices=['tvm', 'sliding_chunks'],
+        parser.add_argument("--attention_mode", type=str, choices=['tvm', 'sliding_chunks', 'sliding_chunks_no_overlap'],
                             default='sliding_chunks', help='Which implementation of selfattention to use')
         parser.add_argument("--fp32", action='store_true', help="default is fp16. Use --fp32 to switch to fp32")
 
@@ -657,14 +693,15 @@ def main(args):
 
     model = TriviaQA(args)
 
-    logger = TestTubeLogger(
+    logger = TensorBoardLogger(
         save_dir=args.save_dir,
         name=args.save_prefix,
         version=0  # always use version=0
     )
 
+    filepath = f'{args.save_dir}/{args.save_prefix}/version_{logger.version}/checkpoints/' + 'ep-{epoch}-em-{avg_val_em:.3f}_f1-{avg_val_f1:.3f}'
     checkpoint_callback = ModelCheckpoint(
-        filepath=os.path.join(args.save_dir, args.save_prefix, "checkpoints"),
+        filepath=filepath,
         save_top_k=5,
         verbose=True,
         monitor='avg_val_f1',
@@ -680,18 +717,27 @@ def main(args):
     print(f'>>>>>>> #steps: {args.steps}, #epochs: {args.epochs}, batch_size: {args.batch_size * num_devices} <<<<<<<')
 
     trainer = pl.Trainer(gpus=args.gpus, distributed_backend='ddp' if args.gpus and (len(args.gpus) > 1) else None,
-                         track_grad_norm=-1, max_nb_epochs=args.epochs, early_stop_callback=None,
+                         track_grad_norm=-1, max_epochs=args.epochs, early_stop_callback=None,
                          accumulate_grad_batches=args.batch_size,
                          val_check_interval=args.val_every,
                          val_percent_check=args.val_percent_check,
                          test_percent_check=args.val_percent_check,
                          logger=logger if not args.disable_checkpointing else False,
                          checkpoint_callback=checkpoint_callback if not args.disable_checkpointing else False,
-                         show_progress_bar=not args.no_progress_bar,
-                         use_amp=not args.fp32, amp_level='O2',
+                         precision=16 if not args.fp32 else 32,
                          )
     if not args.test:
         trainer.fit(model)
+    elif args.test:
+        # to load weights correctly
+        def _load_weights(model, checkpoint):
+            model_dict = model.state_dict()
+            pretrained_dict = {k: v for k, v in checkpoint['state_dict'].items() if k in model_dict}
+            model_dict.update(pretrained_dict)
+            model.load_state_dict(model_dict)
+            return model
+        model = _load_weights(model=model, checkpoint=torch.load(args.test_checkpoint))
+        trainer.test(model)
     trainer.test(model)
 
 
