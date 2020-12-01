@@ -145,7 +145,7 @@ def pad_to_window_size(input_ids: torch.Tensor, attention_mask: torch.Tensor,
 # - Memory: 95% of the memory usage of "sliding_chunks"
 # The windows are asymmetric where number of attention on each side of a token ranges between w to 2w
 # while "sliding_chunks" has a symmetric window around each token.
-# This implementation is roughly similar to the implementation described in the BigBird paper https://arxiv.org/abs/2007.14062
+
 
 def sliding_chunks_no_overlap_matmul_qk(q: torch.Tensor, k: torch.Tensor, w: int, padding_value: float):
     bsz, seqlen, num_heads, head_dim = q.size()
