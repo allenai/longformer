@@ -79,10 +79,10 @@ class SummarizationDataset(Dataset):
 
 class Summarizer(pl.LightningModule):
 
-    def __init__(self, args):
+    def __init__(self, params):
         super().__init__()
-        self.args = args
-        self.hparams = args
+        self.args = params
+        self.hparams = params
         self.tokenizer = AutoTokenizer.from_pretrained(self.args.tokenizer, use_fast=True)
 
         if 'long' in self.args.model_path:
@@ -279,6 +279,8 @@ class Summarizer(pl.LightningModule):
         parser.add_argument("--fp32", action='store_true', help="default is fp16. Use --fp32 to switch to fp32")
         parser.add_argument("--debug", action='store_true', help="debug run")
         parser.add_argument("--resume_ckpt", type=str, help="Path of a checkpoint to resume from")
+        parser.add_argument("--from_pretrained", type=str, default=None,
+                            help="Path to a checkpoint to load model weights but not training state")
         parser.add_argument('--grad_ckpt', action='store_true', help='Enable gradient checkpointing to save memory')
         parser.add_argument("--attention_dropout", type=float, default=0.1, help="attention dropout")
         parser.add_argument("--attention_mode", type=str, default='sliding_chunks', help="Longformer attention mode")
@@ -296,7 +298,11 @@ def main(args):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
 
-    model = Summarizer(args)
+    if args.from_pretrained is not None:
+        model = Summarizer.load_from_checkpoint(args.from_pretrained, args)
+    else:
+        model = Summarizer(args)
+
     model.hf_datasets = nlp.load_dataset('scientific_papers', 'arxiv')
 
     logger = TestTubeLogger(

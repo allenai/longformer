@@ -185,7 +185,6 @@ class LongformerSelfAttention(nn.Module):
             # concat to attn_weights
             # (bsz, seq_len, num_heads, extra attention count + 2*window+1)
             attn_weights = torch.cat((selected_attn_weights, attn_weights), dim=-1)
-
         attn_weights_float = F.softmax(attn_weights, dim=-1, dtype=torch.float32)  # use fp32 for numerical stability
         if key_padding_mask is not None:
             # softmax sometimes inserts NaN if all positions are masked, replace them with 0
