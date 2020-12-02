@@ -2,22 +2,31 @@
 `Longformer` is a BERT-like model for long documents.
 
 
-**\*\*\*\*\* Work In Progress: LongformerEncoderDecoder \*\*\*\*\***
+**\*\*\*\*\* New December 1rd, 2020: LongformerEncoderDecoder \*\*\*\*\***
 
-A `LongformerEncoderDecoder` model is now available. It is geared towards summarization where the input is long but the output is relatively shorter. The following code snippet loads a `LongformerEncoderDecoder` checkpointing started from `BART`. With gradient checkpointing, fp16, and 48GB gpu, the input length can be up to 16K tokens.
+A `LongformerEncoderDecoder (LED)` model is now available. It supports seq2seq tasks with long input. With gradient checkpointing, fp16, and 48GB gpu, the input length can be up to 16K tokens. Check the updated paper for the model details and evaluation.
+
+##### Pretrained models
+  * [`led-base-16384`](https://ai2-s2-research.s3-us-west-2.amazonaws.com/longformer/longformer-encdec-base-16384.tar.gz)
+  * [`led-large-16384`](https://ai2-s2-research.s3-us-west-2.amazonaws.com/longformer/longformer-encdec-large-16384.tar.gz)
+
+##### Requirements
+  * Make sure to use the huggingface/transformers fork specified in `requirements.txt`. It adds support for gradient checkpointing and allows different maximum sequence length for the input and output. You can run:
+
 ```
-pip install git+https://github.com/allenai/longformer.git@encoderdecoder
+pip install git+https://github.com/allenai/longformer.git
+```
 
-# checkpoint-base: https://ai2-s2-research.s3-us-west-2.amazonaws.com/longformer/longformer-encdec-base-16384.tar.gz
-# checkpoint-large: https://ai2-s2-research.s3-us-west-2.amazonaws.com/longformer/longformer-encdec-large-16384.tar.gz
+##### Run the model
 
+```
 from longformer import LongformerEncoderDecoderForConditionalGeneration
 model = LongformerEncoderDecoderForConditionalGeneration.from_pretrained(downloaded_checkpoint, gradient_checkpointing=True)
 ```
 
 - Check the script `scripts/summarization.py` for an example of how to use the model.
 
-- Make sure to use the huggingface/transformers fork specified in `requirements.txt`.
+
 
 **\*\*\*\*\* New July 23rd, 2020: Speed degradation \*\*\*\*\***
 
