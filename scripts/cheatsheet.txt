@@ -70,3 +70,21 @@ python -m scripts.triviaqa_utils.evaluation_utils  \
     --prediction_file predictions.json
 # Output should be:
 {'exact_match': 73.07644188665083, 'f1': 77.78523804802242, 'common': 7993, 'denominator': 7993, 'pred_len': 7993, 'gold_len': 7993}
+
+
+# TPU
+import torch_xla.debug.metrics as met; print(met.metrics_report())
+curl -X POST http://10.125.212.42:8475/requestversion/pytorch-dev20200722
+
+/usr/share/torch-xla-nightly/pytorch/xla/scripts/debug_run.py --outfile debug.tar.gz -- python -u scripts/test_tpu.py
+
+/usr/share/torch-xla-nightly/pytorch/xla/scripts/debug_run.py --outfile debug.tar.gz -- python -u scripts/pretrain.py  --input_dir data/ --save_prefix test_xla_2 --gpu_count 0 --tpu_core_count 1 --val_batches 4 --val_every 130 --num_workers 0 --log_rate 1 --model allenai/longformer-base-4096
+
+python scripts/pretrain.py  --input_dir data/ --save_prefix test_grad_accum --gpu_count 0 --tpu_core_count 8 --val_batches 30 --val_every 30 --num_workers 0 --log_rate 1
+
+export TPU_IP_ADDRESS=10.125.212.42
+export XRT_TPU_CONFIG="tpu_worker;0;$TPU_IP_ADDRESS:8470"
+source /anaconda3/bin/activate torch-xla-nightly
+
+# Resume training
+python  scripts/summarization.py --num_workers 12  --save_prefix eval_long16k_nooverlap_large --model_path bart-large-long-16384/ --max_input_len 16368 --batch_size 2 --grad_accum 4 --grad_ckpt   --attention_mode sliding_chunks_no_overlap --attention_window 340 --val_every 0.333333333  --debug --resume summarization/run_long16k_nooverlap_large/_ckpt_epoch_3_v1.ckpt  --val_percent_check 1.0 --disable_checkpointing

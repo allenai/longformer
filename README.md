@@ -1,5 +1,16 @@
 # <p align=center>`Longformer`</p>
-`Longformer` is a BERT-like model for long documents.
+`Longformer` and `LongformerEncoderDecoder (LED)` are pretrained transformer models for long documents.
+
+**\*\*\*\*\* New December 1rd, 2020: LongformerEncoderDecoder \*\*\*\*\***
+
+A `LongformerEncoderDecoder (LED)` model is now available. It supports seq2seq tasks with long input. With gradient checkpointing, fp16, and 48GB gpu, the input length can be up to 16K tokens. Check the updated paper for the model details and evaluation.
+
+* Pretrained models:  1) [`led-base-16384`](https://ai2-s2-research.s3-us-west-2.amazonaws.com/longformer/longformer-encdec-base-16384.tar.gz),  2) [`led-large-16384`](https://ai2-s2-research.s3-us-west-2.amazonaws.com/longformer/longformer-encdec-large-16384.tar.gz)
+
+* Requirements: Make sure to use the huggingface/transformers fork specified in `requirements.txt`. It adds support for gradient checkpointing and allows different maximum sequence length for the input and output. You can also run `pip install git+https://github.com/allenai/longformer.git`
+
+* Check the script `scripts/summarization.py` for an example of how to use the model.
+
 
 **\*\*\*\*\* New July 23rd, 2020: Speed degradation \*\*\*\*\***
 
