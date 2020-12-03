@@ -83,9 +83,21 @@ def calc_f1(y_pred:torch.Tensor, y_true:torch.Tensor) -> torch.Tensor:
     return f1
 
 
+def collate_fn(batch):
+    '''
+    Padds batch of variable length
+    '''
+    pad_token_id = LongformerClassifier.tokenizer.pad_token_id
+    input_ids, labels = list(zip(*batch))
+    input_ids = torch.nn.utils.rnn.pad_sequence(input_ids, batch_first=True, padding_value=pad_token_id)  # pad input using pad_token_id
+    attention_mask = (input_ids != pad_token_id)
+    labels = torch.stack(labels)
+    return input_ids, attention_mask, labels
+
+
 class ClassificationDataset(Dataset):
 
-    def __init__(self, file_path, tokenizer, seqlen, num_samples=None, mask_padding_with_zero=True, do_padding=True):
+    def __init__(self, file_path, tokenizer, seqlen, num_samples=None, mask_padding_with_zero=True):
         self.data = []
         with (gzip.open(file_path, 'rt') if file_path.endswith('.gz') else open(file_path)) as fin:
             for i, line in enumerate(tqdm(fin, desc=f'loading input file {file_path.split("/")[-1]}', unit_scale=1)):
@@ -98,7 +110,6 @@ class ClassificationDataset(Dataset):
         self.label_to_idx = {e: i for i, e in enumerate(sorted(all_labels))}
         self.idx_to_label = {v: k for k, v in self.label_to_idx.items()}
         self.mask_padding_with_zero = mask_padding_with_zero
-        self.do_padding = do_padding
 
     def __len__(self):
         return len(self.data)
@@ -113,22 +124,8 @@ class ClassificationDataset(Dataset):
         token_ids = self._tokenizer.convert_tokens_to_ids(tokens)
         token_ids = token_ids[:self.seqlen]
         input_len = len(token_ids)
-        attention_mask = [1 if self.mask_padding_with_zero else 0] * input_len        
-        if self.do_padding:
-            padding_length = self.seqlen - input_len
-            token_ids = token_ids + ([self._tokenizer.pad_token_id] * padding_length)
-            attention_mask = attention_mask + ([0 if self.mask_padding_with_zero else 1] * padding_length)
-
-            assert len(token_ids) == self.seqlen, "Error with input length {} vs {}".format(
-                len(token_ids), self.seqlen
-            )
-            assert len(attention_mask) == self.seqlen, "Error with input length {} vs {}".format(
-                len(attention_mask), self.seqlen
-            )
-
         label = self.label_to_idx[instance[LABEL_FIELD_NAME]]
-
-        return (torch.tensor(token_ids), torch.tensor(attention_mask), torch.tensor(label))
+        return (torch.tensor(token_ids), torch.tensor(label))
 
 
 class LongformerClassifier(pl.LightningModule):
@@ -164,9 +161,10 @@ class LongformerClassifier(pl.LightningModule):
         self.hparams.seqlen = self.model.config.max_position_embeddings
         self.classifier = nn.Linear(self.model_config.hidden_size, init_args.num_labels)
         self.save_results_path = None
+        LongformerClassifier.tokenizer = self.tokenizer
 
     def forward(self, input_ids, attention_mask, labels=None):
-        if getattr(self.model_config, 'attention_mode', False):
+        if hasattr(self.model_config, 'attention_mode', False):
             attn_window = self.model_config.attention_window[0]//2 if self.model_config.attention_mode == 'sliding_chunks3' else self.model_config.attention_window[0] 
             input_ids, attention_mask = pad_to_window_size(
                 input_ids, attention_mask, attn_window, self.tokenizer.pad_token_id)
@@ -197,11 +195,10 @@ class LongformerClassifier(pl.LightningModule):
         is_train = split == 'train'
         dataset = ClassificationDataset(
             fname, tokenizer=self.tokenizer, seqlen=self.hparams.seqlen - 2,
-            num_samples=self.hparams.num_samples,
-            do_padding=not (self.hparams.batch_size==1 and self.model_config.attention_mode == 'sliding_chunks3')
+            num_samples=self.hparams.num_samples
         )
 
-        loader = DataLoader(dataset, batch_size=self.hparams.batch_size, num_workers=self.hparams.num_workers, shuffle=(shuffle and is_train))
+        loader = DataLoader(dataset, batch_size=self.hparams.batch_size, num_workers=self.hparams.num_workers, shuffle=(shuffle and is_train), collate_fn=collate_fn)
         return loader
 
     def setup(self, mode):
