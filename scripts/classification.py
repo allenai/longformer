@@ -17,6 +17,7 @@ from torch.utils.data import DataLoader, Dataset, random_split
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
+from sklearn.metrics import f1_score
 
 import torch.distributed as dist
 
@@ -84,7 +85,7 @@ def calc_f1(y_pred:torch.Tensor, y_true:torch.Tensor) -> torch.Tensor:
 
 class ClassificationDataset(Dataset):
 
-    def __init__(self, file_path, tokenizer, seqlen, num_samples=None, mask_padding_with_zero=True):
+    def __init__(self, file_path, tokenizer, seqlen, num_samples=None, mask_padding_with_zero=True, do_padding=True):
         self.data = []
         with (gzip.open(file_path, 'rt') if file_path.endswith('.gz') else open(file_path)) as fin:
             for i, line in enumerate(tqdm(fin, desc=f'loading input file {file_path.split("/")[-1]}', unit_scale=1)):
@@ -97,6 +98,7 @@ class ClassificationDataset(Dataset):
         self.label_to_idx = {e: i for i, e in enumerate(sorted(all_labels))}
         self.idx_to_label = {v: k for k, v in self.label_to_idx.items()}
         self.mask_padding_with_zero = mask_padding_with_zero
+        self.do_padding = do_padding
 
     def __len__(self):
         return len(self.data)
@@ -111,18 +113,18 @@ class ClassificationDataset(Dataset):
         token_ids = self._tokenizer.convert_tokens_to_ids(tokens)
         token_ids = token_ids[:self.seqlen]
         input_len = len(token_ids)
-        attention_mask = [1 if self.mask_padding_with_zero else 0] * input_len
-        padding_length = self.seqlen - input_len
-        token_ids = token_ids + ([self._tokenizer.pad_token_id] * padding_length)
+        attention_mask = [1 if self.mask_padding_with_zero else 0] * input_len        
+        if self.do_padding:
+            padding_length = self.seqlen - input_len
+            token_ids = token_ids + ([self._tokenizer.pad_token_id] * padding_length)
+            attention_mask = attention_mask + ([0 if self.mask_padding_with_zero else 1] * padding_length)
 
-        attention_mask = attention_mask + ([0 if self.mask_padding_with_zero else 1] * padding_length)
-
-        assert len(token_ids) == self.seqlen, "Error with input length {} vs {}".format(
-            len(token_ids), self.seqlen
-        )
-        assert len(attention_mask) == self.seqlen, "Error with input length {} vs {}".format(
-            len(attention_mask), self.seqlen
-        )
+            assert len(token_ids) == self.seqlen, "Error with input length {} vs {}".format(
+                len(token_ids), self.seqlen
+            )
+            assert len(attention_mask) == self.seqlen, "Error with input length {} vs {}".format(
+                len(attention_mask), self.seqlen
+            )
 
         label = self.label_to_idx[instance[LABEL_FIELD_NAME]]
 
@@ -136,17 +138,22 @@ class LongformerClassifier(pl.LightningModule):
         if isinstance(init_args, dict):
             # for loading the checkpoint, pl passes a dict (hparams are saved as dict)
             init_args = Namespace(**init_args)
-        config_path = init_args.config_path or init_args.model_dir
-        checkpoint_path = init_args.checkpoint_path or init_args.model_dir
-        logger.info(f'loading model from config: {config_path}, checkpoint: {checkpoint_path}')
-        config = LongformerConfig.from_pretrained(config_path)
-        config.attention_mode = init_args.attention_mode
-        logger.info(f'attention mode set to {config.attention_mode}')
-        if getattr(init_args, 'attention_window', False):
-            config.attention_window = [init_args.attention_window for _ in range(config.num_hidden_layers)]
-            logger.info(f'attention window set to {config.attention_window}')
-        self.model_config = config
-        self.model = Longformer.from_pretrained(checkpoint_path, config=config)
+        if getattr(init_args, 'use_roberta', False):
+            from transformers import AutoModel
+            self.model = AutoModel.from_pretrained('roberta-large')
+            self.model_config = self.model.config
+        else:
+            config_path = init_args.config_path or init_args.model_dir
+            checkpoint_path = init_args.checkpoint_path or init_args.model_dir
+            logger.info(f'loading model from config: {config_path}, checkpoint: {checkpoint_path}')
+            config = LongformerConfig.from_pretrained(config_path)
+            config.attention_mode = init_args.attention_mode
+            logger.info(f'attention mode set to {config.attention_mode}')
+            if getattr(init_args, 'attention_window', False):
+                config.attention_window = [init_args.attention_window for _ in range(config.num_hidden_layers)]
+                logger.info(f'attention window set to {config.attention_window}')
+            self.model_config = config
+            self.model = Longformer.from_pretrained(checkpoint_path, config=config)
         self.tokenizer = RobertaTokenizer.from_pretrained(init_args.tokenizer)
         if init_args.add_tokens:
             # TODO: change this when tokenizer is also changed
@@ -155,12 +162,16 @@ class LongformerClassifier(pl.LightningModule):
         self.tokenizer.model_max_length = self.model.config.max_position_embeddings
         self.hparams = init_args
         self.hparams.seqlen = self.model.config.max_position_embeddings
-        self.classifier = nn.Linear(config.hidden_size, init_args.num_labels)
+        self.classifier = nn.Linear(self.model_config.hidden_size, init_args.num_labels)
+        self.save_results_path = None
 
     def forward(self, input_ids, attention_mask, labels=None):
-        input_ids, attention_mask = pad_to_window_size(
-            input_ids, attention_mask, self.model_config.attention_window[0], self.tokenizer.pad_token_id)
-        attention_mask[:, 0] = 2  # global attention for the first token
+        if getattr(self.model_config, 'attention_mode', False):
+            attn_window = self.model_config.attention_window[0]//2 if self.model_config.attention_mode == 'sliding_chunks3' else self.model_config.attention_window[0] 
+            input_ids, attention_mask = pad_to_window_size(
+                input_ids, attention_mask, attn_window, self.tokenizer.pad_token_id)
+        if not self.hparams.use_roberta:
+            attention_mask[:, 0] = 2  # global attention for the first token
         output = self.model(input_ids, attention_mask=attention_mask)[0]
         # pool the entire sequence into one vector (CLS token)
         output = output[:, 0, :]
@@ -184,9 +195,10 @@ class LongformerClassifier(pl.LightningModule):
         else:
             assert False
         is_train = split == 'train'
-
         dataset = ClassificationDataset(
-            fname, tokenizer=self.tokenizer, seqlen=self.hparams.seqlen - 2, num_samples=self.hparams.num_samples
+            fname, tokenizer=self.tokenizer, seqlen=self.hparams.seqlen - 2,
+            num_samples=self.hparams.num_samples,
+            do_padding=not (self.hparams.batch_size==1 and self.model_config.attention_mode == 'sliding_chunks3')
         )
 
         loader = DataLoader(dataset, batch_size=self.hparams.batch_size, num_workers=self.hparams.num_workers, shuffle=(shuffle and is_train))
@@ -214,8 +226,9 @@ class LongformerClassifier(pl.LightningModule):
 
     def get_lr_scheduler(self):
         get_schedule_func = arg_to_scheduler[self.hparams.lr_scheduler]
+        num_warmup_steps = int(self.hparams.warmup_steps * self.total_steps())
         scheduler = get_schedule_func(
-            self.opt, num_warmup_steps=self.hparams.warmup_steps, num_training_steps=self.total_steps()
+            self.opt, num_warmup_steps=num_warmup_steps, num_training_steps=self.total_steps()
         )
         scheduler = {"scheduler": scheduler, "interval": "step", "frequency": 1}
         return scheduler
@@ -275,16 +288,25 @@ class LongformerClassifier(pl.LightningModule):
         labels = torch.cat([x["target"] for x in outputs], dim=0)
         preds = torch.argmax(preds, axis=-1)
         accuracy = (preds == labels).int().sum() / float(torch.tensor(preds.shape[-1], dtype=torch.float32, device=labels.device))
-        f1 = calc_f1(preds, labels)
+        preds = preds.detach().cpu().numpy()
+        labels = labels.detach().cpu().numpy()
+        f1_macro = f1_score(labels, preds, average='macro')
+        f1_micro = f1_score(labels, preds, average='micro')
+        # convert back to tensor
+        f1_macro = avg_loss.new_ones(1) * f1_macro
+        f1_micro = avg_loss.new_ones(1) * f1_micro
         if self.trainer.use_ddp:
             torch.distributed.all_reduce(avg_loss, op=torch.distributed.ReduceOp.SUM)
             avg_loss /= self.trainer.world_size
             torch.distributed.all_reduce(accuracy, op=torch.distributed.ReduceOp.SUM)
             accuracy /= self.trainer.world_size
-            torch.distributed.all_reduce(f1, op=torch.distributed.ReduceOp.SUM)
-            f1 /= self.trainer.world_size
+            torch.distributed.all_reduce(f1_macro, op=torch.distributed.ReduceOp.SUM)
+            f1_macro /= self.trainer.world_size
+            torch.distributed.all_reduce(f1_micro, op=torch.distributed.ReduceOp.SUM)
+            f1_micro /= self.trainer.world_size
+            f1_micro = f1_micro
         # accuracy = (preds == out_label_ids).int().sum() / float(torch.tensor(preds.shape[0], dtype=torch.float32, device=out_label_ids.device))
-        results = {"val_loss": avg_loss, "f1": f1, "acc": accuracy}
+        results = {"val_loss": avg_loss, "f1_macro": f1_macro, "f1_micro": f1_micro, "acc": accuracy}
 
         ret = {k: v for k, v in results.items()}
         ret["log"] = results
@@ -303,6 +325,9 @@ class LongformerClassifier(pl.LightningModule):
             if isinstance(v, torch.Tensor):
                 results[k] = v.detach().cpu().item()
         # `val_loss` is the key returned by `self._eval_end()` but actually refers to `test_loss`
+        with open(self.save_results_path, 'w') as fout:
+            logger.info(f'results saved in {self.save_results_path}')
+            json.dump(results, fout, indent=2)
         return {"avg_test_loss": logs["val_loss"].detach().cpu().item(), "log": results, "progress_bar": results}
 
     def test_step(self, batch, batch_nb):
@@ -335,7 +360,7 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--weight_decay", default=0.0, type=float, help="Weight decay if we apply some.")
     parser.add_argument("--adam_epsilon", default=1e-8, type=float, help="Epsilon for Adam optimizer.")
-    parser.add_argument("--warmup_steps", default=0, type=int, help="Linear warmup over warmup_steps.")
+    parser.add_argument("--warmup_steps", default=0.1, type=float, help="Linear warmup over warmup_steps.")
     parser.add_argument("--num_workers", default=4, type=int, help="kwarg passed to DataLoader")
     parser.add_argument("--adafactor", action="store_true")
     parser.add_argument('--save_dir', required=True)
@@ -345,6 +370,7 @@ def parse_args():
     parser.add_argument('--attention_window', default=None, type=int)
     parser.add_argument('--num_samples', default=None, type=int)
     parser.add_argument('--add_tokens', default=False, action='store_true', help='set True if model pretraining includes s2 data.')
+    parser.add_argument('--use_roberta', default=False, action='store_true', help='Use the roberta baseline instead')
     parser.add_argument("--lr_scheduler",
         default="linear",
         choices=arg_to_scheduler_choices,
@@ -352,6 +378,8 @@ def parse_args():
         type=str,
         help="Learning rate scheduler")
     args = parser.parse_args()
+
+    assert args.warmup_steps <= 1
 
     if args.input_dir is not None:
         files = glob.glob(args.input_dir + '/*')
@@ -441,16 +469,20 @@ def main():
 
         if args.do_predict:
             # Optionally, predict and write to output_dir
-            fpath = glob.glob(checkpoint_callback.dirpath + '/*.ckpt')[0]
-            model = LongformerClassifier.load_from_checkpoint(fpath)
-            model.hparams.num_gpus = 1
-            model.hparams.total_gpus = 1
-            model.hparams = args
-            model.hparams.dev_file = args.dev_file
-            model.hparams.test_file = args.test_file
-            model.hparams.train_file = args.dev_file  # the model won't get trained, pass in the dev file instead to load faster
-            trainer = pl.Trainer(gpus=1, test_percent_check=1.0, train_percent_check=0.01, val_percent_check=0.01, precision=extra_train_params['precision'])
-            trainer.test(model)
+            fpaths = glob.glob(checkpoint_callback.dirpath + '/*.ckpt')
+            for fpath in fpaths:
+                model = LongformerClassifier.load_from_checkpoint(fpath)
+                ckpt_fname = fpath.split('/')[-1][:-5]  # remove .ckpt
+                ckpt_dirname = '/'.join(fpath.split('/')[:-1])
+                model.save_results_path = ckpt_dirname + '/results-' + ckpt_fname + '.json'
+                model.hparams.num_gpus = 1
+                model.hparams.total_gpus = 1
+                model.hparams = args
+                model.hparams.dev_file = args.dev_file
+                model.hparams.test_file = args.test_file
+                model.hparams.train_file = args.dev_file  # the model won't get trained, pass in the dev file instead to load faster
+                trainer = pl.Trainer(gpus=1, test_percent_check=1.0, train_percent_check=0.01, val_percent_check=0.01, precision=extra_train_params['precision'])
+                trainer.test(model)
 
 if __name__ == '__main__':
     main()
