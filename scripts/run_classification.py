@@ -4,6 +4,9 @@ import json
 import subprocess
 from collections import defaultdict
 import glob
+import sys
+import signal
+import os
 
 def main():
     parser = argparse.ArgumentParser()
@@ -33,13 +36,13 @@ def main():
         print(f'running on task {i}: {task}')
         for seed in [1234, 21, 65]:
             for lr in [0.00002, 0.00003, 0.00005]:
-                for epochs in [2, 3, 4, 6]:
-                    for batch_size in [16, 32]:
+                for epochs in [2, 3, 5]:
+                    for effective_batch_size in [16, 32]:
                         save_prefix = args.save_prefix + f"{task}-seed{seed}-{str(lr)}-ep{epochs}"
                         outdir = args.save_dir + '/' + save_prefix
+                        batch = 8
+                        accum = effective_batch_size // batch
                         if args.baseline:
-                            batch = 8
-                            accum = batch_size // batch
                             command = ['python',
                             'scripts/classification.py',
                             '--input_dir',
@@ -59,15 +62,6 @@ def main():
                             str(accum),
                             '--num_epochs',
                             f'{epochs}',
-                            '--config_path',
-                            args.config_path,
-                            '--checkpoint_path',
-                            args.model_path,
-                            '--add_tokens',
-                            '--attention_mode',
-                            'sliding_chunks3',
-                            '--attention_window',
-                            '170',
                             '--lr',
                             str(lr),
                             '--do_predict',
@@ -82,14 +76,14 @@ def main():
                             '--save_dir',
                             outdir,
                             '--num_workers',
-                            '8',
+                            '12',
                             '--batch_size',
-                            '1',
+                            str(batch),
                             '--fp16',
                             '--val_check_interval',
                             '0.5',
                             '--grad_accum',
-                            f'{batch_size}',
+                            str(accum),
                             '--num_epochs',
                             f'{epochs}',
                             '--config_path',
@@ -105,7 +99,7 @@ def main():
                             str(lr),
                             '--do_predict']
                         print(f'running {" ".join(command)}')
-                        subprocess.run(' '.join(command), shell=True)
+                        proc = subprocess.run(command)
 
 if __name__ == '__main__':
     main()
