@@ -18,6 +18,9 @@ def main():
     parser.add_argument('--data-dir', '--data_dir', default=None, help='path to the root data.')
     parser.add_argument('--save-dir', '--save_dir', default=None, help='root path to save results', required=True)
     parser.add_argument('--baseline', default=False, action='store_true')
+    parser.add_argument('--remove-checkpoint', default=False, action='store_true')
+    parser.add_argument('--batch-size', default=8, type=int)
+    parser.add_argument('--effective-batch-size', default=16, type=str, help='comma separated desired batch sizes to try e.g, 16,32')
 
     args = parser.parse_args()
 
@@ -35,12 +38,13 @@ def main():
     for i, (task, data_path) in enumerate(zip(tasks, full_paths)):
         print(f'running on task {i}: {task}')
         for seed in [1234, 21, 65]:
-            for lr in [0.00002, 0.00003, 0.00005]:
-                for epochs in [2, 3, 5]:
-                    for effective_batch_size in [16, 32]:
+            for lr in [0.00002, 0.00005]:
+                for epochs in [3, 5]:
+                    for effective_batch_size in args.effective_batch_size.split(','):
+                        effective_batch_size = int(effective_batch_size)
                         save_prefix = args.save_prefix + f"{task}-seed{seed}-{str(lr)}-ep{epochs}"
                         outdir = args.save_dir + '/' + save_prefix
-                        batch = 8
+                        batch = args.batch_size
                         accum = effective_batch_size // batch
                         if args.baseline:
                             command = ['python',
@@ -65,7 +69,9 @@ def main():
                             '--lr',
                             str(lr),
                             '--do_predict',
-                            '--use_roberta']
+                            '--use_roberta',
+                            '--seed',
+                            str(seed)]
                         else:
                             command = ['python',
                             'scripts/classification.py',
@@ -97,7 +103,11 @@ def main():
                             '170',
                             '--lr',
                             str(lr),
-                            '--do_predict']
+                            '--do_predict',
+                            '--seed',
+                            str(seed)]
+                        if args.remove_checkpoint:
+                            command.append('--remove_checkpoint')
                         print(f'running {" ".join(command)}')
                         proc = subprocess.run(command)
 
