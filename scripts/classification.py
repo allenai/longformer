@@ -164,7 +164,7 @@ class LongformerClassifier(pl.LightningModule):
         LongformerClassifier.tokenizer = self.tokenizer
 
     def forward(self, input_ids, attention_mask, labels=None):
-        if hasattr(self.model_config, 'attention_mode', False):
+        if hasattr(self.model_config, 'attention_mode'):
             attn_window = self.model_config.attention_window[0]//2 if self.model_config.attention_mode == 'sliding_chunks3' else self.model_config.attention_window[0] 
             input_ids, attention_mask = pad_to_window_size(
                 input_ids, attention_mask, attn_window, self.tokenizer.pad_token_id)
@@ -351,6 +351,7 @@ def parse_args():
     parser.add_argument('--test_checkpoint', default=None)
     parser.add_argument('--test_percent_check', default=1.0, type=float)
     parser.add_argument('--val_percent_check', default=1.0, type=float)
+    parser.add_argument('--train_percent_check', default=1.0, type=float)
     parser.add_argument('--val_check_interval', default=1.0, type=float)
     parser.add_argument('--num_epochs', default=1, type=int)
     parser.add_argument('--do_predict', default=False, action='store_true')
@@ -368,6 +369,7 @@ def parse_args():
     parser.add_argument('--num_samples', default=None, type=int)
     parser.add_argument('--add_tokens', default=False, action='store_true', help='set True if model pretraining includes s2 data.')
     parser.add_argument('--use_roberta', default=False, action='store_true', help='Use the roberta baseline instead')
+    parser.add_argument('--remove_checkpoint', default=False, action='store_true', help='remove checkpoint after saving')
     parser.add_argument("--lr_scheduler",
         default="linear",
         choices=arg_to_scheduler_choices,
@@ -400,6 +402,7 @@ def get_train_params(args):
     train_params["accumulate_grad_batches"] = args.grad_accum
     train_params['track_grad_norm'] = -1
     train_params['val_percent_check'] = args.val_percent_check
+    train_params['train_percent_check'] = args.train_percent_check
     train_params['val_check_interval'] = args.val_check_interval
     train_params['gpus'] = args.gpus
     train_params['max_epochs'] = args.num_epochs
@@ -421,8 +424,10 @@ def main():
 
     def infer_num_labels(args):
         # Dataset will be constructred inside model, here we just want to read labels (seq len doesn't matter here)
-        ds = ClassificationDataset(args.train_file, tokenizer=args.tokenizer, seqlen=4096)
-        num_labels = len(ds.label_to_idx)
+        ds_train = ClassificationDataset(args.train_file, tokenizer=args.tokenizer, seqlen=4096)
+        ds_val = ClassificationDataset(args.dev_file, tokenizer=args.tokenizer, seqlen=4096)
+        ds_train.label_to_idx.update(ds_val.label_to_idx)
+        num_labels = len(ds_train.label_to_idx)
         return num_labels
 
     if args.test_only:
@@ -461,7 +466,6 @@ def main():
         trainer = pl.Trainer(logger=logger,
                             checkpoint_callback=checkpoint_callback,
                             **extra_train_params)
-
         trainer.fit(model)
 
         if args.do_predict:
@@ -480,6 +484,10 @@ def main():
                 model.hparams.train_file = args.dev_file  # the model won't get trained, pass in the dev file instead to load faster
                 trainer = pl.Trainer(gpus=1, test_percent_check=1.0, train_percent_check=0.01, val_percent_check=0.01, precision=extra_train_params['precision'])
                 trainer.test(model)
+                if args.remove_checkpoint:
+                    print(f'removing checkpoint: {fpath}')
+                    os.remove(fpath)
+
 
 if __name__ == '__main__':
     main()
