@@ -44,20 +44,21 @@ def normalize_string(s):
     return ' '.join(s.strip().split())
 
 
-def get_wikihop_roberta_tokenizer():
+def get_wikihop_roberta_tokenizer(tokenizer_name='roberta-large'):
+    # roberta-base and roberta-large tokenizers are the same so use 'roberta-large' as default
     from transformers.tokenization_roberta import RobertaTokenizer
 
     additional_tokens = ['[question]', '[/question]', '[ent]', '[/ent]']
 
     # roberta-base and roberta-large tokenizers are the same
-    tokenizer = RobertaTokenizer.from_pretrained('roberta-large')
+    tokenizer = RobertaTokenizer.from_pretrained(tokenizer_name)
     tokenizer.add_tokens(additional_tokens)
 
     return tokenizer
 
 
-def preprocess_wikihop(infile):
-    tokenizer = get_wikihop_roberta_tokenizer()
+def preprocess_wikihop(infile, tokenizer_name='roberta-large'):
+    tokenizer = get_wikihop_roberta_tokenizer(tokenizer_name)
 
     def tok(s):
         return tokenizer.tokenize(normalize_string(s), add_prefix_space=True)
@@ -90,28 +91,28 @@ def preprocess_wikihop(infile):
     return data
 
 
-def preprocess_wikihop_train_dev(rootdir):
+def preprocess_wikihop_train_dev(rootdir, tokenizer_name='roberta-large'):
     for split in ['dev', 'train']:
         infile = os.path.join(rootdir, split + '.json')
         outfile = os.path.join(rootdir, split + '.tokenized.json')
         print("Processing {} split".format(split))
-        data = preprocess_wikihop(infile)
+        data = preprocess_wikihop(infile, tokenizer_name=tokenizer_name)
         with open(outfile, 'w') as fout:
             fout.write(json.dumps(data))
 
 
 class WikihopQADataset(Dataset):
-    def __init__(self, filepath, shuffle_candidates, tokenize=False):
+    def __init__(self, filepath, shuffle_candidates, tokenize=False, tokenizer_name='roberta-large'):
         super().__init__()
 
         if not tokenize:
             with open(filepath, 'r') as fin:
                 self.instances = json.load(fin)
         else:
-            self.instances = preprocess_wikihop(filepath)
+            self.instances = preprocess_wikihop(filepath, tokenizer_name=tokenizer_name)
 
         self.shuffle_candidates = shuffle_candidates
-        self._tokenizer = get_wikihop_roberta_tokenizer()
+        self._tokenizer = get_wikihop_roberta_tokenizer(tokenizer_name)
 
     @staticmethod
     def collate_single_item(x):
@@ -360,7 +361,7 @@ class WikihopQAModel(LightningModule):
             fname = os.path.join(self.args.data_dir, "{}.tokenized.json".format(split))
         is_train = split == 'train'
 
-        dataset = WikihopQADataset(fname, is_train, tokenize=tokenize)
+        dataset = WikihopQADataset(fname, is_train, tokenize=tokenize, tokenizer_name=self.args.tokenizer_name)
 
         if self.ddp:
             sampler = torch.utils.data.distributed.DistributedSampler(dataset, shuffle=is_train)
@@ -391,6 +392,7 @@ class WikihopQAModel(LightningModule):
         parser.add_argument("--save-prefix", type=str, help="Checkpoint prefix", default=None)
         parser.add_argument("--data-dir", type=str, help="/path/to/qangaroo_v1.1/wikihop", required=True)
         parser.add_argument("--model-name", type=str, default='longformer-base-4096')
+        parser.add_argument("--tokenizer-name", type=str, default='roberta-large')
         parser.add_argument("--num-gpus", type=int, default=1)
         parser.add_argument("--batch-size", type=int, default=32, help="Batch size per GPU")
         parser.add_argument("--num-workers", type=int, default=4, help="Number of data loader workers")
@@ -464,7 +466,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     if args.prepare_data:
-        preprocess_wikihop_train_dev(args.data_dir)
+        preprocess_wikihop_train_dev(args.data_dir, args.tokenizer_name)
     else:
         main(args)
 
