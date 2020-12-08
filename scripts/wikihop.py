@@ -57,11 +57,25 @@ def get_wikihop_roberta_tokenizer(tokenizer_name='roberta-large'):
     return tokenizer
 
 
-def preprocess_wikihop(infile, tokenizer_name='roberta-large'):
+def preprocess_wikihop(infile, tokenizer_name='roberta-large', sentence_tokenize=False):
+    from nltk.tokenize import sent_tokenize
+
     tokenizer = get_wikihop_roberta_tokenizer(tokenizer_name)
 
     def tok(s):
         return tokenizer.tokenize(normalize_string(s), add_prefix_space=True)
+
+    def sent_tok(s):
+        return tokenizer.tokenize(''.join(['<s> ' + sent + '</s>' for sent in sent_tokenize(normalize_string(s))]), add_prefix_space=False)
+
+    if sentence_tokenize:
+        the_tok = sent_tok
+        doc_start = '<doc-s>'
+        doc_end = '</doc-s>'
+    else:
+        the_tok = tok
+        doc_start = '</s>'
+        doc_end = '</s>'
 
     with open(infile, 'r') as fin:
         data = json.load(fin)
@@ -71,13 +85,13 @@ def preprocess_wikihop(infile, tokenizer_name='roberta-large'):
     for instance_num, instance in enumerate(data):
         if instance_num % 100 == 0:
             print("Finished {} instances of {}, total time={}".format(instance_num, len(data), time.time() - t1))
-        query_tokens = ['[question]'] + tok(instance['query']) + ['[/question]']
+        query_tokens = ['[question]'] + the_tok(instance['query']) + ['[/question]']
         supports_tokens = [
-            ['</s>'] + tok(support) + ['</s>']
+            [doc_start] + the_tok(support) + [doc_end]
             for support in instance['supports']
         ]
         candidate_tokens = [
-            ['[ent]'] + tok(candidate) + ['[/ent]']
+            ['[ent]'] + the_tok(candidate) + ['[/ent]']
             for candidate in instance['candidates']
         ]
         answer_index = instance['candidates'].index(instance['answer'])
@@ -91,25 +105,28 @@ def preprocess_wikihop(infile, tokenizer_name='roberta-large'):
     return data
 
 
-def preprocess_wikihop_train_dev(rootdir, tokenizer_name='roberta-large'):
+def preprocess_wikihop_train_dev(rootdir, tokenizer_name='roberta-large', sentence_tokenize=False):
     for split in ['dev', 'train']:
         infile = os.path.join(rootdir, split + '.json')
-        outfile = os.path.join(rootdir, split + '.tokenized.json')
+        if sentence_tokenize:
+            outfile = os.path.join(rootdir, split + '.sentence.tokenized.json')
+        else:
+            outfile = os.path.join(rootdir, split + '.tokenized.json')
         print("Processing {} split".format(split))
-        data = preprocess_wikihop(infile, tokenizer_name=tokenizer_name)
+        data = preprocess_wikihop(infile, tokenizer_name=tokenizer_name, sentence_tokenize=sentence_tokenize)
         with open(outfile, 'w') as fout:
             fout.write(json.dumps(data))
 
 
 class WikihopQADataset(Dataset):
-    def __init__(self, filepath, shuffle_candidates, tokenize=False, tokenizer_name='roberta-large'):
+    def __init__(self, filepath, shuffle_candidates, tokenize=False, tokenizer_name='roberta-large', sentence_tokenize=False):
         super().__init__()
 
         if not tokenize:
             with open(filepath, 'r') as fin:
                 self.instances = json.load(fin)
         else:
-            self.instances = preprocess_wikihop(filepath, tokenizer_name=tokenizer_name)
+            self.instances = preprocess_wikihop(filepath, tokenizer_name=tokenizer_name, sentence_tokenize=sentence_tokenize)
 
         self.shuffle_candidates = shuffle_candidates
         self._tokenizer = get_wikihop_roberta_tokenizer(tokenizer_name)
@@ -358,10 +375,13 @@ class WikihopQAModel(LightningModule):
 
     def _get_loader(self, split, fname=None, tokenize=False):
         if fname is None:
-            fname = os.path.join(self.args.data_dir, "{}.tokenized.json".format(split))
+            if self.args.sentence_tokenize:
+                fname = os.path.join(self.args.data_dir, "{}.sentence.tokenized.json".format(split))
+            else:
+                fname = os.path.join(self.args.data_dir, "{}.tokenized.json".format(split))
         is_train = split == 'train'
 
-        dataset = WikihopQADataset(fname, is_train, tokenize=tokenize, tokenizer_name=self.args.tokenizer_name)
+        dataset = WikihopQADataset(fname, is_train, tokenize=tokenize, tokenizer_name=self.args.tokenizer_name, sentence_tokenize=self.args.sentence_tokenize)
 
         if self.ddp:
             sampler = torch.utils.data.distributed.DistributedSampler(dataset, shuffle=is_train)
@@ -408,6 +428,7 @@ class WikihopQAModel(LightningModule):
         parser.add_argument('--resume-from-checkpoint', default=None, type=str)
         parser.add_argument('--fp16', default=False, action='store_true')
         parser.add_argument('--amp-level', default="O2", type=str)
+        parser.add_argument('--sentence-tokenize', default=False, action='store_true')
 
         return parser
 
@@ -466,7 +487,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     if args.prepare_data:
-        preprocess_wikihop_train_dev(args.data_dir, args.tokenizer_name)
+        preprocess_wikihop_train_dev(args.data_dir, args.tokenizer_name, args.sentence_tokenize)
     else:
         main(args)
 
