@@ -89,7 +89,7 @@ class LongformerEncoderDecoderForConditionalGenerationT5(T5ForConditionalGenerat
 class LongformerEncoderDecoderConfigT5(T5Config):
     def __init__(self, attention_window: List[int] = None, attention_dilation: List[int] = None,
                  autoregressive: bool = False, attention_mode: str = 'sliding_chunks',
-                 has_relative_attention_bias: bool = False, gradient_checkpointing: bool = False,
+                 has_relative_attention_bias: bool = True, gradient_checkpointing: bool = False,
                  **kwargs):
         """
         Args:

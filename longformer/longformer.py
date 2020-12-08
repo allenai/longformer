@@ -71,7 +71,7 @@ class LongformerSelfAttention(nn.Module):
         if "has_relative_attention_bias" in config.to_dict():
             self.is_decoder = config.is_decoder
             self.relative_attention_num_buckets = config.relative_attention_num_buckets
-            self.has_relative_attention_bias = has_relative_attention_bias
+            self.has_relative_attention_bias = config.has_relative_attention_bias
             if self.has_relative_attention_bias:
                 self.relative_attention_bias = nn.Embedding(self.relative_attention_num_buckets, self.num_heads)
             self.is_t5 = True
