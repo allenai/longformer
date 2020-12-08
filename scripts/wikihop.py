@@ -123,9 +123,11 @@ class WikihopQADataset(Dataset):
         super().__init__()
 
         if not tokenize:
+            print("Reading cached data from {}".format(filepath))
             with open(filepath, 'r') as fin:
                 self.instances = json.load(fin)
         else:
+            print("Pre-processing data from {}".format(filepath))
             self.instances = preprocess_wikihop(filepath, tokenizer_name=tokenizer_name, sentence_tokenize=sentence_tokenize)
 
         self.shuffle_candidates = shuffle_candidates
