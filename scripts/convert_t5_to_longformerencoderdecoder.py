@@ -66,6 +66,7 @@ def create_long_model(
     # replace the `modeling_t5.T5Attention` object with `LongformerSelfAttention`
     config.attention_window = [attention_window] * config.num_hidden_layers
     config.attention_dilation = [1] * config.num_hidden_layers
+    # model.encoder.block = model.encoder.block[:1]
 
     for i, layer in enumerate(model.encoder.block):
         self_attn = layer.layer[0].SelfAttention

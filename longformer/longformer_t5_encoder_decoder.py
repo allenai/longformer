@@ -87,81 +87,49 @@ class LongformerSelfAttentionT5Basic(nn.Module):
         """
         Adapted from Mesh Tensorflow:
         https://github.com/tensorflow/mesh/blob/0cb87fe07da627bf0b7e60475d59f95ed6b5be3d/mesh_tensorflow/transformer/transformer_layers.py#L593
-        Translate relative position to a bucket number for relative attention.
-        The relative position is defined as memory_position - query_position, i.e.
-        the distance in tokens from the attending position to the attended-to
-        position.  If bidirectional=False, then positive relative positions are
-        invalid.
-        We use smaller buckets for small absolute relative_position and larger buckets
-        for larger absolute relative_positions.  All relative positions >=max_distance
-        map to the same bucket.  All relative positions <=-max_distance map to the
-        same bucket.  This should allow for more graceful generalization to longer
-        sequences than the model has been trained on.
+        Translate relative position to a bucket number for relative attention. The relative position is defined as
+        memory_position - query_position, i.e. the distance in tokens from the attending position to the attended-to
+        position. If bidirectional=False, then positive relative positions are invalid. We use smaller buckets for
+        small absolute relative_position and larger buckets for larger absolute relative_positions. All relative
+        positions >=max_distance map to the same bucket. All relative positions <=-max_distance map to the same bucket.
+        This should allow for more graceful generalization to longer sequences than the model has been trained on
         Args:
             relative_position: an int32 Tensor
             bidirectional: a boolean - whether the attention is bidirectional
             num_buckets: an integer
             max_distance: an integer
         Returns:
-            a Tensor with the same shape as relative_position, containing int32
-            values in the range [0, num_buckets)
+            a Tensor with the same shape as relative_position, containing int32 values in the range [0, num_buckets)
         """
-        ret = 0
-        n = -relative_position
-        # Since torch.abs() will not work correctly with converted inf values, explicitly set to a lower value.
-        # TODO: check this!!
-        n[n==float('inf')] = max_distance
-        n[n==float('-inf')] = -max_distance
+        relative_buckets = 0
         if bidirectional:
             num_buckets //= 2
-            ret += (n < 0).to(torch.long) * num_buckets  # mtf.to_int32(mtf.less(n, 0)) * num_buckets
-            n = torch.abs(n)
+            relative_buckets += (relative_position > 0).to(torch.long) * num_buckets
+            relative_position = torch.abs(relative_position)
         else:
-            n = torch.max(n, torch.zeros_like(n))
-        n = n.long()
-        # now n is in the range [0, inf)
+            relative_position = -torch.min(relative_position, torch.zeros_like(relative_position))
+        # now relative_position is in the range [0, inf)
 
         # half of the buckets are for exact increments in positions
         max_exact = num_buckets // 2
-        is_small = n < max_exact
+        is_small = relative_position < max_exact
 
         # The other half of the buckets are for logarithmically bigger bins in positions up to max_distance
-        val_if_large = max_exact + (
-            torch.log(n.float() / max_exact) / math.log(max_distance / max_exact) * (num_buckets - max_exact)
+        relative_postion_if_large = max_exact + (
+            torch.log(relative_position.float() / max_exact)
+            / math.log(max_distance / max_exact)
+            * (num_buckets - max_exact)
         ).to(torch.long)
-        val_if_large = torch.min(val_if_large, torch.full_like(val_if_large, num_buckets - 1))
+        relative_postion_if_large = torch.min(
+            relative_postion_if_large, torch.full_like(relative_postion_if_large, num_buckets - 1)
+        )
 
-        ret += torch.where(is_small, n, val_if_large)
-        return ret
-
-    @staticmethod
-    def _smaller_score_matrix(matrix, seq_len, w, bidirectional):
-
-        diag_sums = torch.zeros(seq_len, 2*w+1)
-        #diag_sums.fill_(float('-inf'))
-        diag_sums[:, 0:w].fill_(float('-inf'))
-        diag_sums[:, w+1:].fill_(float('inf'))
-        last = w+1 if bidirectional else 1
-
-        c = 0
-        for k in range(-w, last):
-            d = torch.diagonal(matrix, offset=k, dim1=-2, dim2=-1)
-            if d.nelement():
-                if k <= 0:
-                    diag_sums[abs(k):seq_len, c] = d
-                else:
-                    diag_sums[0:seq_len-k, c] = d
-            c += 1
-        
-        # mask_invalid_locations(diag_sums.unsqueeze(0).unsqueeze(2).float(), w, 1, True)
-        return diag_sums
+        relative_buckets += torch.where(is_small, relative_position, relative_postion_if_large)
+        return relative_buckets
 
     def compute_bias(self, qlen, klen):
         """ Compute binned relative position bias """
-        context_position = torch.arange(qlen, dtype=torch.long)[:, None]
-        memory_position = torch.arange(klen, dtype=torch.long)[None, :]
-        relative_position = memory_position - context_position  # shape (qlen, klen)
-        relative_position = self._smaller_score_matrix(relative_position, qlen, w=self.attention_window, bidirectional=not self.is_decoder)
+        relative_position = torch.tensor([[i-self.attention_window for i in range(2*self.attention_window+1)]])
         rp_bucket = self._relative_position_bucket(
             relative_position,  # shape (qlen, klen)
             bidirectional=not self.is_decoder,
@@ -189,7 +157,6 @@ class LongformerSelfAttentionT5Basic(nn.Module):
               0: local attention
             +ve: global attention
         '''
-
         if attention_mask is not None:
             attention_mask = attention_mask.squeeze(dim=2).squeeze(dim=1)
             key_padding_mask = attention_mask < 0
@@ -284,7 +251,8 @@ class LongformerSelfAttentionT5Basic(nn.Module):
             if past_key_value_state is not None:
                 position_bias = position_bias[:, :, -1:, :]
 
-            # attention_mask is not the right size; should it even be added?
+            # TODO: attention_mask should also be the same shape as position_bias.
+            # Sliding attention window??
             # if attention_mask is not None:
             #     position_bias = position_bias + attention_mask  # (1, num_heads, seq_len, 2*window+1)
 
