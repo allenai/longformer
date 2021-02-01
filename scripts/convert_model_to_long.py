@@ -4,7 +4,7 @@ import math
 import copy
 import torch
 from transformers import RobertaForMaskedLM
-from transformers import XLMTokenizer, RobertaModel
+from transformers import RobertaTokenizer, RobertaModel
 from transformers import LongformerSelfAttention # v4.2.0
 import torch.nn as nn
 from torch.nn import functional as F
@@ -209,7 +209,7 @@ def create_long_model(
     max_pos
 ):
     model = RobertaForMaskedLM.from_pretrained(initialization_model)
-    tokenizer = XLMTokenizer.from_pretrained(initialization_tokenizer, model_max_length=max_pos)
+    tokenizer = RobertaTokenizer.from_pretrained(initialization_tokenizer, model_max_length=max_pos)
     config = model.config
 
     # extend position embeddings
