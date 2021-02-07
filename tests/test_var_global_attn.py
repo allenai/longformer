@@ -8,6 +8,9 @@ from longformer.longformer import LongformerSelfAttention, LongformerConfig
 class TestLongformerSelfAttention(unittest.TestCase):
 
     def _run_test(self, attn, hidden_state, attention_mask):
+        hidden_state = hidden_state.float().cuda()
+        if attention_mask is not None:
+            attention_mask = attention_mask.float().cuda()
         output3 = attn(hidden_states=hidden_state, attention_mask=attention_mask if attention_mask is not None else None)[0]
 
         output1 = attn(hidden_states=hidden_state[:1], attention_mask=attention_mask[:1] if attention_mask is not None else None)[0]
@@ -36,6 +39,7 @@ class TestLongformerSelfAttention(unittest.TestCase):
         config.autoregressive = False
 
         attn = LongformerSelfAttention(config=config, layer_id=0)
+        attn = attn.cuda()
 
         hidden_state = torch.randn(bsz, seqlen, embed_dim)
         attention_mask = torch.zeros((bsz, 1, 1, seqlen), dtype=torch.int)  # local attention everywhere

@@ -20,10 +20,13 @@ RUN echo deb http://apt.llvm.org/xenial/ llvm-toolchain-xenial-8 main \
      wget -O - http://apt.llvm.org/llvm-snapshot.gpg.key|sudo apt-key add - && \
      apt-get update && apt-get install -y --force-yes llvm-8
 
-RUN pip3 install numpy pytest cython decorator scipy ipython ipdb torch==1.2.0 torchvision tensorboardx tensorboard pytest
+RUN pip3 install --upgrade setuptools
 
 RUN apt-get install -y python3.7-dev
-RUN pip3 install fairseq==v0.9.0
+
+RUN pip3 install numpy pytest cython decorator scipy ipython torch==1.6.0 torchvision pytest 
+
+RUN pip3 install fairseq==v0.9.0 transformers==4.2.2
 
 # Build TVM
 COPY install/install_tvm_gpu.sh /install/install_tvm_gpu.sh

@@ -123,3 +123,12 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Pycharm editor settings
+.idea
+
+# VS code
+.vscode
+
+# tvm source code
+incubator-tvm/
