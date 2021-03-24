@@ -221,7 +221,7 @@ class LongformerSelfAttention(nn.Module):
         if position_bias is None and self.has_relative_attention_bias:
             window_relative_position = torch.arange(
                 -self.attention_window, self.attention_window + 1, 1, dtype=torch.long, device=attn_weights.device,
-            )
+            )  # (2*window+1,)
             window_position_bias = (
                 self.relative_attention_bias(
                     relative_position_bucket(window_relative_position, num_buckets=self.relative_attention_num_buckets)
