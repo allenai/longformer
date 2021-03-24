@@ -150,11 +150,9 @@ class LongformerSelfAttentionForT5(nn.Module):
         use_cache=False,
         output_attentions=False,
     ):
-
         outputs = self.longformer_self_attn(
             input, attention_mask=mask, position_bias=position_bias, output_attentions=output_attentions,
         )
-
         outputs = (self.output(outputs[0]), None) + outputs[1:]
 
         return outputs
