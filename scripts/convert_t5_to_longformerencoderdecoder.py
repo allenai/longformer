@@ -16,8 +16,10 @@ logging.basicConfig(level=logging.INFO)
 
 def create_long_model(save_model_to, base_model, attention_window, max_pos):
     # load base model & tokenizer
-    model = T5ForConditionalGeneration.from_pretrained(base_model)
     tokenizer = T5Tokenizer.from_pretrained(base_model, model_max_length=max_pos)
+    model = T5ForConditionalGeneration.from_pretrained(base_model)
+    print("Base model architecture")
+    print(model)
 
     # setup config
     config = LongformerT5Config.from_pretrained(base_model)
@@ -98,6 +100,8 @@ def main():
     model = LongformerT5ForConditionalGeneration.from_pretrained(args.save_model_to)
     model.eval()
     model.config.gradient_checkpointing = True
+    print("Converted model architecture")
+    print(model)
 
     TXT = "A rose is a rose is a"
     data = tokenizer([TXT], return_tensors="pt", padding="max_length", max_length=2048)
