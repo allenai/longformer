@@ -4,10 +4,11 @@ from longformer.longformer import LongformerSelfAttention
 from transformers.modeling_bart import BartConfig, BartForConditionalGeneration
 from transformers.modeling_t5 import T5Config, T5ForConditionalGeneration
 
+
 class LongformerEncoderDecoderForConditionalGeneration(BartForConditionalGeneration):
     def __init__(self, config):
         super().__init__(config)
-        if config.attention_mode == 'n2':
+        if config.attention_mode == "n2":
             pass  # do nothing, use BertSelfAttention instead
         else:
             for i, layer in enumerate(self.model.encoder.layers):
@@ -15,9 +16,15 @@ class LongformerEncoderDecoderForConditionalGeneration(BartForConditionalGenerat
 
 
 class LongformerEncoderDecoderConfig(BartConfig):
-    def __init__(self, attention_window: List[int] = None, attention_dilation: List[int] = None,
-                 autoregressive: bool = False, attention_mode: str = 'sliding_chunks',
-                 gradient_checkpointing: bool = False, **kwargs):
+    def __init__(
+        self,
+        attention_window: List[int] = None,
+        attention_dilation: List[int] = None,
+        autoregressive: bool = False,
+        attention_mode: str = "sliding_chunks",
+        gradient_checkpointing: bool = False,
+        **kwargs
+    ):
         """
         Args:
             attention_window: list of attention window sizes of length = number of layers.
@@ -36,7 +43,7 @@ class LongformerEncoderDecoderConfig(BartConfig):
         self.autoregressive = autoregressive
         self.attention_mode = attention_mode
         self.gradient_checkpointing = gradient_checkpointing
-        assert self.attention_mode in ['tvm', 'sliding_chunks', 'n2']
+        assert self.attention_mode in ["tvm", "sliding_chunks", "n2"]
 
 
 class LongformerSelfAttentionForBart(nn.Module):
@@ -76,21 +83,26 @@ class LongformerSelfAttentionForBart(nn.Module):
         return (attn_output,) + outputs[1:] if len(outputs) == 2 else (attn_output, None)
 
 
-class LongformerEncoderDecoderForConditionalGenerationT5(T5ForConditionalGeneration):
+class LongformerT5ForConditionalGeneration(T5ForConditionalGeneration):
     def __init__(self, config):
         super().__init__(config)
-        if config.attention_mode == 'n2':
+        if config.attention_mode == "n2":
             pass  # do nothing, use BertSelfAttention instead
         else:
             for i, layer in enumerate(self.encoder.block):
                 layer.layer[0].SelfAttention = LongformerSelfAttentionForT5(config, layer_id=i)
 
 
-class LongformerEncoderDecoderConfigT5(T5Config):
-    def __init__(self, attention_window: List[int] = None, attention_dilation: List[int] = None,
-                 autoregressive: bool = False, attention_mode: str = 'sliding_chunks',
-                 has_relative_attention_bias: bool = True, gradient_checkpointing: bool = False,
-                 **kwargs):
+class LongformerT5Config(T5Config):
+    def __init__(
+        self,
+        attention_window: List[int] = None,
+        attention_dilation: List[int] = None,
+        autoregressive: bool = False,
+        attention_mode: str = "sliding_chunks",
+        gradient_checkpointing: bool = False,
+        **kwargs
+    ):
         """
         Args:
             attention_window: list of attention window sizes of length = number of layers.
@@ -108,21 +120,27 @@ class LongformerEncoderDecoderConfigT5(T5Config):
         self.attention_dilation = attention_dilation
         self.autoregressive = autoregressive
         self.attention_mode = attention_mode
-        self.has_relative_attention_bias = has_relative_attention_bias
         self.gradient_checkpointing = gradient_checkpointing
-        self.attention_probs_dropout_prob = self.dropout_rate
-        assert self.attention_mode in ['tvm', 'sliding_chunks', 'n2']
+        assert self.attention_mode in ["tvm", "sliding_chunks", "n2"]
+
 
 class LongformerSelfAttentionForT5(nn.Module):
+    """
+    Replacement for T5Attention, but only for the encoder stack
+    """
+
     def __init__(self, config, layer_id):
         super().__init__()
         self.embed_dim = config.d_model
-        self.longformer_self_attn = LongformerSelfAttention(config, layer_id=layer_id)
-        self.output = nn.Linear(self.embed_dim, self.embed_dim)
+        self.has_relative_attention_bias = layer_id == 0
+        self.longformer_self_attn = LongformerSelfAttention(
+            config, layer_id=layer_id, bias=False, attention_dim_scale=False
+        )
+        self.output = nn.Linear(self.embed_dim, self.embed_dim, bias=False)
 
     def forward(
         self,
-        query,
+        input,
         mask=None,
         kv=None,
         position_bias=None,
@@ -133,18 +151,10 @@ class LongformerSelfAttentionForT5(nn.Module):
         output_attentions=False,
     ):
 
-        tgt_len, bsz, embed_dim = query.size()
-        assert embed_dim == self.embed_dim
-        assert list(query.size()) == [tgt_len, bsz, embed_dim]
-
         outputs = self.longformer_self_attn(
-            query, #.transpose(0, 1),  # LongformerSelfAttention expects (bsz, seqlen, embd_dim)
-            #attention_mask=key_padding_mask.unsqueeze(dim=1).unsqueeze(dim=1) * -1,
-            attention_mask=mask, #.unsqueeze(dim=1).unsqueeze(dim=1)*-1,
-            output_attentions=output_attentions,
+            input, attention_mask=mask, position_bias=position_bias, output_attentions=output_attentions,
         )
 
-        attn_output = self.output(outputs[0].transpose(0, 1))
+        outputs = (self.output(outputs[0]), None) + outputs[1:]
 
-        return (attn_output,) + outputs[1:] if len(outputs) == 2 else (attn_output, None)
-
+        return outputs
