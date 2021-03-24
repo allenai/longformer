@@ -3,14 +3,12 @@ import logging
 import os
 import copy
 
-from transformers import T5Tokenizer
-
-from transformers import T5ForConditionalGeneration
+from transformers import T5Tokenizer, T5ForConditionalGeneration
 from longformer.longformer_encoder_decoder import (
     LongformerSelfAttentionForT5,
     LongformerT5Config,
+    LongformerT5ForConditionalGeneration,
 )
-from longformer.longformer_encoder_decoder import LongformerT5ForConditionalGeneration
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
