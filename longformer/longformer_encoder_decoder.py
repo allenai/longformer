@@ -1,8 +1,9 @@
+import copy
 from typing import List, Optional, Tuple, Dict
 from torch import nn, Tensor
 from longformer.longformer import LongformerSelfAttention
 from transformers.modeling_bart import BartConfig, BartForConditionalGeneration
-from transformers.modeling_t5 import T5Config, T5ForConditionalGeneration
+from transformers.modeling_t5 import T5Config, T5ForConditionalGeneration, T5Stack
 
 
 class LongformerEncoderDecoderForConditionalGeneration(BartForConditionalGeneration):
@@ -92,6 +93,40 @@ class LongformerT5ForConditionalGeneration(T5ForConditionalGeneration):
             for i, layer in enumerate(self.encoder.block):
                 layer.layer[0].SelfAttention = LongformerSelfAttentionForT5(config, layer_id=i)
 
+            class LongformerT5DecoderStack(T5Stack):
+                def forward(
+                    self,
+                    input_ids=None,
+                    attention_mask=None,
+                    encoder_hidden_states=None,
+                    encoder_attention_mask=None,
+                    inputs_embeds=None,
+                    head_mask=None,
+                    past_key_value_states=None,
+                    use_cache=None,
+                    output_attentions=None,
+                    output_hidden_states=None,
+                    return_dict=None,
+                ):
+                    if encoder_attention_mask is not None:
+                        encoder_attention_mask = encoder_attention_mask.clamp(max=1)
+                    return T5Stack.forward(
+                        self,
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        encoder_hidden_states=encoder_hidden_states,
+                        encoder_attention_mask=encoder_attention_mask,
+                        inputs_embeds=inputs_embeds,
+                        head_mask=head_mask,
+                        past_key_value_states=past_key_value_states,
+                        use_cache=use_cache,
+                        output_attentions=output_attentions,
+                        output_hidden_states=output_hidden_states,
+                        return_dict=return_dict,
+                    )
+
+            self.decoder.__class__ = LongformerT5DecoderStack
+
 
 class LongformerT5Config(T5Config):
     def __init__(
@@ -101,6 +136,7 @@ class LongformerT5Config(T5Config):
         autoregressive: bool = False,
         attention_mode: str = "sliding_chunks",
         gradient_checkpointing: bool = False,
+        long_relative_attention_num_buckets: int = 40,
         **kwargs
     ):
         """
@@ -121,6 +157,7 @@ class LongformerT5Config(T5Config):
         self.autoregressive = autoregressive
         self.attention_mode = attention_mode
         self.gradient_checkpointing = gradient_checkpointing
+        self.long_relative_attention_num_buckets = long_relative_attention_num_buckets
         assert self.attention_mode in ["tvm", "sliding_chunks", "n2"]
 
 

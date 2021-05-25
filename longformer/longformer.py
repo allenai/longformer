@@ -92,7 +92,7 @@ class LongformerSelfAttention(nn.Module):
 
         if hasattr(config, "relative_attention_num_buckets") and layer_id == 0:
             self.has_relative_attention_bias = True
-            self.relative_attention_num_buckets = config.relative_attention_num_buckets
+            self.relative_attention_num_buckets = config.long_relative_attention_num_buckets
             self.relative_attention_bias = nn.Embedding(self.relative_attention_num_buckets, self.num_heads)
         else:
             self.has_relative_attention_bias = False
@@ -224,12 +224,19 @@ class LongformerSelfAttention(nn.Module):
             )  # (2*window+1,)
             window_position_bias = (
                 self.relative_attention_bias(
-                    relative_position_bucket(window_relative_position, num_buckets=self.relative_attention_num_buckets)
+                    relative_position_bucket(
+                        window_relative_position,
+                        num_buckets=self.relative_attention_num_buckets,
+                        max_distance=self.attention_window,
+                    )
                 )
                 .permute(1, 0)[None, None, :, :]
                 .repeat(bsz, seq_len, 1, 1)
             )  # (bsz, seq_len, num_heads, 2*window+1)
-            perm_global_position_bias = attn_weights.new_zeros(
+            perm_global_position_bias_from_g = attn_weights.new_zeros(
+                bsz, max_num_extra_indices_per_batch, seq_len, self.num_heads
+            )  # (bsz, max_num_extra_indices_per_batch, seq_len, num_heads)
+            perm_global_position_bias_to_g = attn_weights.new_zeros(
                 bsz, max_num_extra_indices_per_batch, seq_len, self.num_heads
             )  # (bsz, max_num_extra_indices_per_batch, seq_len, num_heads)
             if extra_attention_mask is not None:
@@ -242,21 +249,43 @@ class LongformerSelfAttention(nn.Module):
                 selected_global_relative_position = (
                     selected_global_memory_position - selected_global_query_position
                 )  # (sum num_extra_indices_per_batch, seq_len)
-                selected_global_position_bias = self.relative_attention_bias(
-                    relative_position_bucket(selected_global_relative_position)
+                selected_global_position_bias_from_g = self.relative_attention_bias(
+                    relative_position_bucket(
+                        selected_global_relative_position,
+                        num_buckets=self.relative_attention_num_buckets,
+                        max_distance=self.attention_window,
+                    )
                 )  # (sum num_extra_indices_per_batch, seq_len, num_heads)
-                perm_global_position_bias[
+                perm_global_position_bias_from_g[
                     selection_padding_mask_nonzeros
-                ] = selected_global_position_bias  # (bsz, max_num_extra_indices_per_batch, seq_len)
-                global_position_bias = perm_global_position_bias.permute(0, 2, 3, 1)
+                ] = selected_global_position_bias_from_g  # (bsz, max_num_extra_indices_per_batch, seq_len, num_heads)
+                selected_global_position_bias_to_g = self.relative_attention_bias(
+                    relative_position_bucket(
+                        -selected_global_relative_position,
+                        num_buckets=self.relative_attention_num_buckets,
+                        max_distance=self.attention_window,
+                    )
+                )  # (sum num_extra_indices_per_batch, seq_len, num_heads)
+                perm_global_position_bias_to_g[
+                    selection_padding_mask_nonzeros
+                ] = selected_global_position_bias_to_g  # (bsz, max_num_extra_indices_per_batch, seq_len, num_heads)
+
+                global_position_bias_from_g = perm_global_position_bias_from_g.permute(0, 2, 3, 1)
                 # (bsz, seq_len, num_heads, max_num_extra_indices_per_batch)
-                position_bias = torch.cat((global_position_bias, window_position_bias,), dim=-1,)
-                # (bsz, seq_len, num_heads, max_num_extra_indices_per_batch + 2*window+1)
+                global_position_bias_to_g = perm_global_position_bias_to_g.permute(0, 3, 1, 2)
+                # (bsz, num_heads, max_num_extra_indices_per_batch, seq_len)
+
+                position_bias = {
+                    "window": torch.cat((global_position_bias_from_g, window_position_bias,), dim=-1,),
+                    "global": global_position_bias_to_g,
+                }
+                # window: (bsz, seq_len, num_heads, max_num_extra_indices_per_batch + 2*window+1),
+                # global: (bsz, num_heads, max_num_extra_indices_per_batch, seq_len)
             else:
-                position_bias = window_position_bias
+                position_bias = {"window": window_position_bias}
 
         if position_bias is not None:
-            attn_weights += position_bias
+            attn_weights += position_bias["window"]
 
         attn_weights_float = F.softmax(attn_weights, dim=-1, dtype=torch.float32)  # use fp32 for numerical stability
         if key_padding_mask is not None:
@@ -326,8 +355,9 @@ class LongformerSelfAttention(nn.Module):
                 max_num_extra_indices_per_batch,
                 seq_len,
             ]
-
             attn_weights = attn_weights.view(bsz, self.num_heads, max_num_extra_indices_per_batch, seq_len)
+            if position_bias is not None:
+                attn_weights += position_bias["global"]
             attn_weights[selection_padding_mask_zeros[0], :, selection_padding_mask_zeros[1], :] = -10000.0
             if key_padding_mask is not None:
                 attn_weights = attn_weights.masked_fill(key_padding_mask.unsqueeze(1).unsqueeze(2), -10000.0,)
@@ -376,9 +406,9 @@ class LongformerSelfAttention(nn.Module):
         return outputs
 
 
-def relative_position_bucket(relative_position, bidirectional=True, num_buckets=32, max_distance=128):
+def relative_position_bucket(relative_position, bidirectional=True, num_buckets=32, max_exact=16, max_distance=128):
     """
-    Imported from Huggingface transformers
+    Imported from Huggingface transformers, with some modification
     https://github.com/huggingface/transformers/blob/a0a027c2ed53b324cf4d0179ceec88d4ff414d47/src/transformers/models/t5/modeling_t5.py#L344
     Original description below:
     Adapted from Mesh Tensorflow:
@@ -400,6 +430,7 @@ def relative_position_bucket(relative_position, bidirectional=True, num_buckets=
     relative_buckets = 0
     if bidirectional:
         num_buckets //= 2
+        max_exact //= 2
         relative_buckets += (relative_position > 0).to(torch.long) * num_buckets
         relative_position = torch.abs(relative_position)
     else:
@@ -407,7 +438,6 @@ def relative_position_bucket(relative_position, bidirectional=True, num_buckets=
     # now relative_position is in the range [0, inf)
 
     # half of the buckets are for exact increments in positions
-    max_exact = num_buckets // 2
     is_small = relative_position < max_exact
 
     # The other half of the buckets are for logarithmically bigger bins in positions up to max_distance
