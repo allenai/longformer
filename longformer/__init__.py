@@ -1,3 +1,5 @@
 from longformer.longformer import Longformer, LongformerForMaskedLM, LongformerConfig
 from longformer.longformer_encoder_decoder import LongformerEncoderDecoderConfig
 from longformer.longformer_encoder_decoder import LongformerEncoderDecoderForConditionalGeneration
+from longformer.longformer_encoder_decoder import LongformerT5ForConditionalGeneration
+from longformer.longformer_encoder_decoder import LongformerT5Config

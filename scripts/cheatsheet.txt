@@ -88,3 +88,17 @@ source /anaconda3/bin/activate torch-xla-nightly
 
 # Resume training
 python  scripts/summarization.py --num_workers 12  --save_prefix eval_long16k_nooverlap_large --model_path bart-large-long-16384/ --max_input_len 16368 --batch_size 2 --grad_accum 4 --grad_ckpt   --attention_mode sliding_chunks_no_overlap --attention_window 340 --val_every 0.333333333  --debug --resume summarization/run_long16k_nooverlap_large/_ckpt_epoch_3_v1.ckpt  --val_percent_check 1.0 --disable_checkpointing
+
+# Convert model
+python scripts/convert_t5_to_longformerencoderdecoder.py --save_model_to /net/nfs2.s2-research/haokunl/exp_files/model_artifacts/t5/longt5-base-16384 --base_model t5-base 
+python scripts/convert_t5_to_longformerencoderdecoder.py --save_model_to /net/nfs2.s2-research/haokunl/exp_files/model_artifacts/t5/longt5-small-16384 --base_model t5-small 
+
+
+srun --gpus=4 --nodes=1 python scripts/summarization.py --num_workers 12 \
+ --save_dir /net/nfs2.s2-research/haokunl/exp_files/summarization \
+ --save_prefix longt5-base-16k \
+ --model_path /net/nfs2.s2-research/haokunl/exp_files/model_artifacts/t5/longt5-base-16384 \
+ --adafactor --tokenizer t5-base \
+ --max_input_len 16384 --batch_size 2 --grad_accum 4 --grad_ckpt \
+ --attention_mode sliding_chunks --attention_window 512 \
+ --val_every 0.333333333 --debug --val_percent_check 1.0 --disable_checkpointing
