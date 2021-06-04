@@ -1,4 +1,3 @@
-
 # Wikihop model from:
 # "Longformer: The Long-Document Transformer", Beltagy et al, 2020: https://arxiv.org/abs/2004.05150
 
@@ -94,7 +93,7 @@ def preprocess_wikihop(infile, tokenizer_name='roberta-large', sentence_tokenize
             ['[ent]'] + the_tok(candidate) + ['[/ent]']
             for candidate in instance['candidates']
         ]
-        answer_index = instance['candidates'].index(instance['answer'])
+        answer_index = instance['answer']
 
         instance['query_tokens'] = query_tokens
         instance['supports_tokens'] = supports_tokens
@@ -162,12 +161,13 @@ class WikihopQADataset(Dataset):
         # candidates
         n_candidates = len(candidate_tokens)
         sort_order = list(range(n_candidates))
-        if self.shuffle_candidates:
-            random.shuffle(sort_order)
-            new_answer_index = sort_order.index(answer_index)
-            answer_index = new_answer_index
+        # if self.shuffle_candidates:
+        #     random.shuffle(sort_order)
+        #     new_answer_index = answer_index
+        #     answer_index = new_answer_index
         all_candidate_tokens.extend(chain.from_iterable([candidate_tokens[k] for k in sort_order]))
 
+        
         # the supports
         n_supports = len(supports_tokens)
         sort_order = list(range(n_supports))
@@ -205,7 +205,7 @@ def load_longformer(model_name='longformer-base-4096'):
 
 
 def get_activations(model, candidate_ids, support_ids, max_seq_len, truncate_seq_len):
-    # max_seq_len: the maximum sequence length possible for the model
+     # max_seq_len: the maximum sequence length possible for the model
     # truncate_seq_len: only use the first truncate_seq_len total tokens in the candidate + supports (e.g. just the first 4096)
     candidate_len = candidate_ids.shape[1]
     support_len = support_ids.shape[1]
@@ -223,7 +223,9 @@ def get_activations(model, candidate_ids, support_ids, max_seq_len, truncate_seq
 
     else:
         all_activations = []
+        
         available_support_len = max_seq_len - candidate_len
+
         for start in range(0, support_len, available_support_len):
             end = min(start + available_support_len, support_len, truncate_seq_len)
             token_ids = torch.cat([candidate_ids, support_ids[:, start:end]], dim=1)
@@ -241,6 +243,7 @@ def get_activations(model, candidate_ids, support_ids, max_seq_len, truncate_seq
         return all_activations
 
 
+
 class WikihopQAModel(LightningModule):
     def __init__(self, args):
         super(WikihopQAModel, self).__init__()
@@ -249,7 +252,9 @@ class WikihopQAModel(LightningModule):
 
         self.longformer = load_longformer(args.model_name)
         self.answer_score = torch.nn.Linear(self.longformer.embeddings.word_embeddings.weight.shape[1], 1, bias=False)
-        self.loss = torch.nn.CrossEntropyLoss(reduction='sum')
+        # self.loss = torch.nn.MSELoss(reduction='sum')
+        self.loss =  torch.nn.BCELoss()
+        self.m = torch.nn.Sigmoid()
 
         self._truncate_seq_len = self.args.truncate_seq_len
         if self._truncate_seq_len is None:
@@ -287,6 +292,7 @@ class WikihopQAModel(LightningModule):
         # select the activations we will make predictions at from each element of the list.
         # we are guaranteed the prediction_indices are valid indices since each element
         # of activations list has all of the candidates
+
         prediction_activations = [act.index_select(1, prediction_indices) for act in activations]
         prediction_scores = [
             self.answer_score(prediction_act).squeeze(-1)
@@ -297,14 +303,24 @@ class WikihopQAModel(LightningModule):
         sum_prediction_scores = torch.cat(
                 [pred_scores.unsqueeze(-1) for pred_scores in prediction_scores], dim=-1
         ).sum(dim=-1)
+        correct_prediction_index = correct_prediction_index.float()
 
-        loss = self.loss(sum_prediction_scores, correct_prediction_index)
-
+        loss = self.loss(self.m(sum_prediction_scores[0]), correct_prediction_index[0])
+     
+        print("self.m(sum_prediction_scores[0])",self.m(sum_prediction_scores[0]))
+        # --------------------
         batch_size = candidate_ids.new_ones(1) * prediction_activations[0].shape[0]
 
-        predicted_answers = sum_prediction_scores.argmax(dim=1)
-        num_correct = (predicted_answers == correct_prediction_index).int().sum()
-
+        # predicted_answers = sum_prediction_scores.argmax(dim=1)
+        predicted_answers = torch.tensor([[float(1.) if x>0.5 else float(.0) for x in self.m(sum_prediction_scores[0])]]).to('cuda')
+        # num_correct = (predicted_answers == correct_prediction_index).int().sum()
+        num_correct =  torch.tensor([1] if torch.equal(predicted_answers, correct_prediction_index) else [0]).to('cuda')
+        
+        print('\n')
+        print("*"*20," : ",num_correct)
+        print("predicted_answers: ",predicted_answers,'\n')
+        print("correct_prediction_index: ",correct_prediction_index,'\n')
+        print("*"*100)
         if not return_predicted_index:
             return loss, batch_size, num_correct
         else:
@@ -313,6 +329,7 @@ class WikihopQAModel(LightningModule):
     def training_step(self, batch, batch_nb):
         loss, batch_size, num_correct = self.forward(*batch)
         lr = loss.new_zeros(1) + self.trainer.optimizers[0].param_groups[0]['lr']
+        
         tensorboard_logs = {
             'loss': loss,
             'lr': lr,
@@ -331,6 +348,7 @@ class WikihopQAModel(LightningModule):
         return {'val_loss': loss, 'log': tensorboard_logs}
 
     def validation_end(self, outputs):
+        
         total_loss = torch.stack([x['val_loss'] * x['log']['batch_size'].float() for x in outputs]).sum()
         total_batch_size = torch.stack([x['log']['batch_size'] for x in outputs]).sum().float()
         total_correct = torch.stack([x['log']['val_accuracy'] * x['log']['batch_size'].float() for x in outputs]).sum()
@@ -344,9 +362,11 @@ class WikihopQAModel(LightningModule):
         accuracy = total_correct / total_batch_size
 
         logs = {'val_loss': avg_loss, 'val_accuracy': accuracy}
+        
         return {'avg_loss': avg_loss, 'log': logs, 'progress_bar': logs}
 
-    def optimizer_step(self, current_epoch, batch_nb, optimizer, optimizer_i, second_order_closure=None):
+    def optimizer_step(self, current_epoch, batch_nb, optimizer, optimizer_i, second_order_closure=None,using_native_amp=None):
+        
         optimizer.step()
         optimizer.zero_grad()
         self._num_grad_updates += 1
@@ -364,7 +384,8 @@ class WikihopQAModel(LightningModule):
             betas=(0.9, self.args.beta2),
         )
 
-        num_training_steps = self.args.num_epochs * 43738 / self.args.batch_size / self.args.num_gpus
+       
+        num_training_steps = self.args.num_epochs * 10059 / self.args.batch_size / self.args.num_gpus
         # Want to step scheduler every gradient update. This isn't supported by this version
         # of PTL, so manage the scheduler manually.
         self.scheduler = get_linear_schedule_with_warmup(
@@ -414,23 +435,23 @@ class WikihopQAModel(LightningModule):
         parser.add_argument("--save-prefix", type=str, help="Checkpoint prefix", default=None)
         parser.add_argument("--data-dir", type=str, help="/path/to/qangaroo_v1.1/wikihop", required=True)
         parser.add_argument("--model-name", type=str, default='longformer-base-4096')
-        parser.add_argument("--tokenizer-name", type=str, default='roberta-large')
+        parser.add_argument("--tokenizer-name", type=str, default='roberta-base')
         parser.add_argument("--num-gpus", type=int, default=1)
-        parser.add_argument("--batch-size", type=int, default=32, help="Batch size per GPU")
-        parser.add_argument("--num-workers", type=int, default=4, help="Number of data loader workers")
-        parser.add_argument("--num-epochs", type=int, default=15, help="Number of epochs")
+        parser.add_argument("--batch-size", type=int, default=1, help="Batch size per GPU")
+        parser.add_argument("--num-workers", type=int, default=1, help="Number of data loader workers")
+        parser.add_argument("--num-epochs", type=int, default=10, help="Number of epochs")
         parser.add_argument("--val-check-interval", type=int, default=250, help="number of gradient updates between checking validation loss")
         parser.add_argument("--warmup", type=int, default=200, help="Number of warmup steps")
         parser.add_argument("--lr", type=float, default=3e-5, help="Maximum learning rate")
         parser.add_argument("--weight_decay", type=float, default=0.01)
         parser.add_argument("--beta2", type=float, default=0.98, help="AdamW beta2")
-        parser.add_argument("--max-seq-len", type=int, default=4096, help="The maximum sequence length for the model")
-        parser.add_argument("--truncate-seq-len", type=int, default=None, help="Only consider this many tokens of the input, default is to use all of the available context")
+        parser.add_argument("--max-seq-len", type=int, default=1024, help="The maximum sequence length for the model")
+        parser.add_argument("--truncate-seq-len", type=int, default=True, help="Only consider this many tokens of the input, default is to use all of the available context")
         parser.add_argument("--seed", type=int, default=1234, help="Seed")
         parser.add_argument('--resume-from-checkpoint', default=None, type=str)
         parser.add_argument('--fp16', default=False, action='store_true')
         parser.add_argument('--amp-level', default="O2", type=str)
-        parser.add_argument('--sentence-tokenize', default=False, action='store_true')
+        parser.add_argument('--sentence-tokenize', default=True, action='store_true')
 
         return parser
 
@@ -492,4 +513,3 @@ if __name__ == '__main__':
         preprocess_wikihop_train_dev(args.data_dir, args.tokenizer_name, args.sentence_tokenize)
     else:
         main(args)
-
