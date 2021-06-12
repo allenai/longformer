@@ -38,8 +38,11 @@ class TestSlidingChunksMM(unittest.TestCase):
                 time1 = time2 = 0  # don't include the first few iterations because of high variance
 
             query = torch.randn(B * N * H * M, requires_grad=True, device=device, dtype=dtype).view(B, N, H, M)
+            query.retain_grad()
             key = torch.randn(B * N * H * M, requires_grad=True, device=device, dtype=dtype).flip(dims=(0,)).view(B, N, H, M)
+            key.retain_grad()
             value = torch.randn(B * N * H * M, requires_grad=True, device=device, dtype=dtype).view(B, N, H, M)
+            value.retain_grad()
 
             # TVM MM
             torch.cuda.synchronize()
@@ -49,6 +52,12 @@ class TestSlidingChunksMM(unittest.TestCase):
             attention_probs1 = torch.nn.functional.softmax(attention1, dim=-1)
             context1 = diagonaled_mm_tvm(attention_probs1, value, W, D, True, 0, autoregressive)
             context1.sum().backward()
+            query_grad1 = 1.0*query.grad
+            query.grad.zero_()
+            key_grad1 = 1.0*key.grad
+            key.grad.zero_()
+            value_grad1 = 1.0*value.grad
+            value.grad.zero_()
             torch.cuda.synchronize()
             time1 += time.time() - start
             torch.cuda.empty_cache()
@@ -64,6 +73,12 @@ class TestSlidingChunksMM(unittest.TestCase):
             attention_probs2 = torch.nn.functional.softmax(attention2, dim=-1)
             context2 = sliding_chunks_matmul_pv(attention_probs2, value, W)
             context2.sum().backward()
+            query_grad2 = 1.0*query.grad
+            query.grad.zero_()
+            key_grad2 = 1.0*key.grad
+            key.grad.zero_()
+            value_grad2 = 1.0*value.grad
+            value.grad.zero_()
             torch.cuda.synchronize()
             time2 += time.time() - start
             torch.cuda.empty_cache()
@@ -71,6 +86,9 @@ class TestSlidingChunksMM(unittest.TestCase):
             try:
                 assert torch.allclose(attention1, attention2.float(), atol=1e-4, rtol=1e-5)
                 assert torch.allclose(context1, context2.float(), atol=1e-4, rtol=1e-5)
+                assert torch.allclose(query_grad1, query_grad2.float(), atol=1e-4, rtol=1e-3)
+                assert torch.allclose(key_grad1, key_grad2.float(), atol=1e-4, rtol=1e-3)
+                assert torch.allclose(value_grad1, value_grad2.float(), atol=1e-4, rtol=1e-3)
             except AssertionError:
                 failed_tests += 1
 

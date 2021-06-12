@@ -64,10 +64,10 @@ class DiagonaledMM(torch.autograd.Function):
                     ),
                     tvm.if_then_else(
                         tvm.all(
-                            i + D[q] * (k - w_upper) >= 0,  # `w_upper` to handle the case `autoregressive=True`
-                            i + D[q] * (k - w_upper) < n,
+                            i - D[q] * (k - w) >= 0,  # `w_upper` to handle the case `autoregressive=True`
+                            i - D[q] * (k - w) < n,
                         ),
-                        X[l, i + D[q] * (k - w_upper), q, (w_upper + w) - k] * Y[l, i + D[q] * (k - w_upper), q, j],  # # t1 is diagonaled and should be transposed
+                        X[l, i - D[q] * (k - w), q, k] * Y[l, i - D[q] * (k - w), q, j],  # # t1 is diagonaled and should be transposed
                         padding
                     ),
                 ),
