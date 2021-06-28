@@ -60,9 +60,14 @@ python -m scripts.triviaqa  \
     --dev_dataset squad-wikipedia-dev-4096.json  \
     --gpus 0  --num_workers 4 \
     --max_seq_len 4096 --doc_stride -1  \
-    --save_prefix triviaqa-longformer-large  \  # pretrained pytorch-lighting checkpoint
-    --model_path path/to/pretrained/longformer-large-4096  \  # loaded but not used
+    --saved_prefix choose-a-name-for-output-dir
+    --model_path path/to/pretrained/longformer-large-4096 # path to folder of downloaded model pretrained with Masked LM, creating your own roberta-large-4096 following "convert_model_to_long.ipynb" will not work here
+    --resume_ckpt path/to/triviaqa-longformer-large/checkpoints/fixed_ckpt_epoch_4_v2.ckpt  # path to downloaded model finetuned for triviaqa
     --test   # predictions will be saved into `predictions.json`
+
+Note: if "fixed_ckpt_epoch_4_v2.ckpt" fails to load, use python console to add these 2 values:
+checkpoint["state_dict"]["model.embeddings.position_ids"] = torch.arange(4098).to('cuda').unsqueeze(0)
+checkpoint["checkpoint_callback_best_model_path"]=""  # some versions of pytorch lightning may not need this
 
 # then run the official evaluation scripts
 python -m scripts.triviaqa_utils.evaluation_utils  \
