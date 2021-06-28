@@ -67,6 +67,17 @@ class LongformerSelfAttention(nn.Module):
         self.key = nn.Linear(config.hidden_size, self.embed_dim)
         self.value = nn.Linear(config.hidden_size, self.embed_dim)
 
+        # this is for the T5 setting
+        if "has_relative_attention_bias" in config.to_dict():
+            self.is_decoder = config.is_decoder
+            self.relative_attention_num_buckets = config.relative_attention_num_buckets
+            self.has_relative_attention_bias = config.has_relative_attention_bias
+            if self.has_relative_attention_bias:
+                self.relative_attention_bias = nn.Embedding(self.relative_attention_num_buckets, self.num_heads)
+            self.is_t5 = True
+        else:
+            self.is_t5 = False
+
         self.query_global = nn.Linear(config.hidden_size, self.embed_dim)
         self.key_global = nn.Linear(config.hidden_size, self.embed_dim)
         self.value_global = nn.Linear(config.hidden_size, self.embed_dim)
@@ -85,10 +96,72 @@ class LongformerSelfAttention(nn.Module):
             assert not self.autoregressive  # not supported
             assert self.attention_dilation == 1  # dilation is not supported
 
+    @staticmethod
+    def _relative_position_bucket(relative_position, bidirectional=True, num_buckets=32, max_distance=128):
+        """
+        Adapted from Mesh Tensorflow:
+        https://github.com/tensorflow/mesh/blob/0cb87fe07da627bf0b7e60475d59f95ed6b5be3d/mesh_tensorflow/transformer/transformer_layers.py#L593
+        Translate relative position to a bucket number for relative attention. The relative position is defined as
+        memory_position - query_position, i.e. the distance in tokens from the attending position to the attended-to
+        position. If bidirectional=False, then positive relative positions are invalid. We use smaller buckets for
+        small absolute relative_position and larger buckets for larger absolute relative_positions. All relative
+        positions >=max_distance map to the same bucket. All relative positions <=-max_distance map to the same bucket.
+        This should allow for more graceful generalization to longer sequences than the model has been trained on
+        Args:
+            relative_position: an int32 Tensor
+            bidirectional: a boolean - whether the attention is bidirectional
+            num_buckets: an integer
+            max_distance: an integer
+        Returns:
+            a Tensor with the same shape as relative_position, containing int32 values in the range [0, num_buckets)
+        """
+        relative_buckets = 0
+        if bidirectional:
+            num_buckets //= 2
+            relative_buckets += (relative_position > 0).to(torch.long) * num_buckets
+            relative_position = torch.abs(relative_position)
+        else:
+            relative_position = -torch.min(relative_position, torch.zeros_like(relative_position))
+        # now relative_position is in the range [0, inf)
+
+        # half of the buckets are for exact increments in positions
+        max_exact = num_buckets // 2
+        is_small = relative_position < max_exact
+
+        # The other half of the buckets are for logarithmically bigger bins in positions up to max_distance
+        relative_postion_if_large = max_exact + (
+            torch.log(relative_position.float() / max_exact)
+            / math.log(max_distance / max_exact)
+            * (num_buckets - max_exact)
+        ).to(torch.long)
+        relative_postion_if_large = torch.min(
+            relative_postion_if_large, torch.full_like(relative_postion_if_large, num_buckets - 1)
+        )
+
+        relative_buckets += torch.where(is_small, relative_position, relative_postion_if_large)
+        return relative_buckets
+
+    def compute_bias(self, qlen, klen):
+        """ Compute binned relative position bias """
+        relative_position = torch.tensor([[i-self.attention_window for i in range(2*self.attention_window+1)]])
+        rp_bucket = self._relative_position_bucket(
+            relative_position,  # shape (qlen, klen)
+            bidirectional=not self.is_decoder,
+            num_buckets=self.relative_attention_num_buckets,
+        )
+        rp_bucket = rp_bucket.to(self.relative_attention_bias.weight.device)
+        values = self.relative_attention_bias(rp_bucket)  # shape (qlen, klen, num_heads)
+#         values = values.permute([2, 0, 1]).unsqueeze(0)  # shape (1, num_heads, qlen, klen)
+        # Changing the shape to below because that's what LongformerSelfAttention's attn_weights need.
+        values = values.permute([0, 2, 1]).unsqueeze(0) # shape (1, qlen, num_heads, klen)
+        return values
+
     def forward(
         self,
         hidden_states,
         attention_mask=None,
+        position_bias=None,
+        past_key_value_state=None,
         head_mask=None,
         encoder_hidden_states=None,
         encoder_attention_mask=None,
@@ -185,6 +258,24 @@ class LongformerSelfAttention(nn.Module):
             # concat to attn_weights
             # (bsz, seq_len, num_heads, extra attention count + 2*window+1)
             attn_weights = torch.cat((selected_attn_weights, attn_weights), dim=-1)
+
+        if self.is_t5:
+            if position_bias is None:
+                if not self.has_relative_attention_bias:
+                    raise ValueError("No position_bias provided and no weights to compute position_bias")
+
+                position_bias = self.compute_bias(seq_len, seq_len)
+                # if key and values are already calculated
+                # we want only the last query position bias
+                if past_key_value_state is not None:
+                    position_bias = position_bias[:, :, -1:, :]
+                # TODO: attention_mask should also be the same shape as position_bias.
+                # Sliding attention window??
+                # if attention_mask is not None:
+                #     position_bias = position_bias + attention_mask  # (1, num_heads, seq_len, 2*window+1)
+            attn_weights += position_bias
+
+
         attn_weights_float = F.softmax(attn_weights, dim=-1, dtype=torch.float32)  # use fp32 for numerical stability
         if key_padding_mask is not None:
             # softmax sometimes inserts NaN if all positions are masked, replace them with 0
