@@ -11,7 +11,8 @@ import nlp
 from rouge_score import rouge_scorer
 
 import pytorch_lightning as pl
-from pytorch_lightning.logging import TestTubeLogger
+#from pytorch_lightning.logging import TestTubeLogger
+from pytorch_lightning.loggers.test_tube import TestTubeLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.overrides.data_parallel import LightningDistributedDataParallel
 
