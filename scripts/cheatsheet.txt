@@ -6,10 +6,8 @@
 # clone longformer
 git clone https://github.com/allenai/longformer.git
 cd longformer
-# clone tvm inside the `longformer` directory
-git clone --single-branch --recursive --branch v0.8.0 https://github.com/apache/tvm.git apache-tvm
 # build docker image
-docker build -t my_tvm_image -f docker/tvm_docker_cuda_11  apache-tvm/docker/
+docker build -t my_tvm_image -f docker/tvm_docker_cuda_11 .
 # run docker container
 docker run -it --gpus all  --mount type=bind,source="$(pwd)",target=/code my_tvm_image
 # inside the docker container, do the following ...

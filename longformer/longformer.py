@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from longformer.diagonaled_mm_tvm import diagonaled_mm as diagonaled_mm_tvm, mask_invalid_locations
 from longformer.sliding_chunks import sliding_chunks_matmul_qk, sliding_chunks_matmul_pv
 from longformer.sliding_chunks import sliding_chunks_no_overlap_matmul_qk, sliding_chunks_no_overlap_matmul_pv
-from transformers.modeling_roberta import RobertaConfig, RobertaModel, RobertaForMaskedLM
+from transformers.models.roberta.modeling_roberta import RobertaConfig, RobertaModel, RobertaForMaskedLM
 
 
 class Longformer(RobertaModel):
@@ -49,6 +49,7 @@ class LongformerConfig(RobertaConfig):
         self.attention_dilation = attention_dilation
         self.autoregressive = autoregressive
         self.attention_mode = attention_mode
+        print(self.attention_mode)
         assert self.attention_mode in ['tvm', 'sliding_chunks', 'n2', 'sliding_chunks_no_overlap']
 
 

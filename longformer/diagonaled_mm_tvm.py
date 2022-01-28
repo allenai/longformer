@@ -34,36 +34,36 @@ class DiagonaledMM(torch.autograd.Function):
         device = None if device == 'cpu' else device
         tgt_host="llvm"
 
-        b = tvm.var('b')  # batch size
-        n = tvm.var('n')  # sequence length
-        h = tvm.var('h')  # number of heads
-        m = tvm.var('m')  # hidden dimension
-        w = tvm.var('w')  # window size
-        w_upper = tvm.var('w_upper')  # window size to the right of the word. Should be `0` or `w`
-        padding = tvm.var('padding')  # padding
-        transpose_t1 = tvm.var('transpose_t1')  # t1 should be transposed
-        t1d3 = tvm.var('t1d3')  # last dimension of t1
-        t3d3 = tvm.var('t3d3')  # last dimension of t3 (the result tensor)
-        X = tvm.placeholder((b, n, h, t1d3), name='X', dtype=dtype)  # first tensor
-        Y = tvm.placeholder((b, n, h, m), name='Y', dtype=dtype)  # second tensor
-        k = tvm.reduce_axis((0, t1d3), name='k')  # dimension to sum over
-        D = tvm.placeholder((h), name='D', dtype='int')  # dilation per head
+        b = tvm.te.var('b')  # batch size
+        n = tvm.te.var('n')  # sequence length
+        h = tvm.te.var('h')  # number of heads
+        m = tvm.te.var('m')  # hidden dimension
+        w = tvm.te.var('w')  # window size
+        w_upper = tvm.te.var('w_upper')  # window size to the right of the word. Should be `0` or `w`
+        padding = tvm.te.var('padding')  # padding
+        transpose_t1 = tvm.te.var('transpose_t1')  # t1 should be transposed
+        t1d3 = tvm.te.var('t1d3')  # last dimension of t1
+        t3d3 = tvm.te.var('t3d3')  # last dimension of t3 (the result tensor)
+        X = tvm.te.placeholder((b, n, h, t1d3), name='X', dtype=dtype)  # first tensor
+        Y = tvm.te.placeholder((b, n, h, m), name='Y', dtype=dtype)  # second tensor
+        k = tvm.te.reduce_axis((0, t1d3), name='k')  # dimension to sum over
+        D = tvm.te.placeholder((h), name='D', dtype='int')  # dilation per head
         output_shape = (b, n, h, t3d3)  # shape of the result tensor
-        algorithm = lambda l, i, q, j: tvm.sum(
-            tvm.if_then_else(
+        algorithm = lambda l, i, q, j: tvm.te.sum(
+            tvm.te.if_then_else(
                 t3d3 == m,  # if output dimension == m, then t1 is diagonaled (FIXME: This breaks if t3d3 == m == t1d3)
-                tvm.if_then_else(
+                tvm.te.if_then_else(
                     transpose_t1 == 0,
-                    tvm.if_then_else(
-                        tvm.all(
+                    tvm.te.if_then_else(
+                        tvm.te.all(
                             i + D[q] * (k - w) >= 0,
                             i + D[q] * (k - w) < n,
                         ),
                         X[l, i, q, k] * Y[l, i + D[q] * (k - w), q, j],  # t1 is diagonaled
                         padding
                     ),
-                    tvm.if_then_else(
-                        tvm.all(
+                    tvm.te.if_then_else(
+                        tvm.te.all(
                             i + D[q] * (k - w_upper) >= 0,  # `w_upper` to handle the case `autoregressive=True`
                             i + D[q] * (k - w_upper) < n,
                         ),
@@ -71,8 +71,8 @@ class DiagonaledMM(torch.autograd.Function):
                         padding
                     ),
                 ),
-                tvm.if_then_else(
-                    tvm.all(
+                tvm.te.if_then_else(
+                    tvm.te.all(
                         i + D[q] * (j - w) >= 0,
                         i + D[q] * (j - w) < n,
                     ),
@@ -81,8 +81,8 @@ class DiagonaledMM(torch.autograd.Function):
                 )
             ), axis=k)
 
-        Z = tvm.compute(output_shape, algorithm, name='Z')  # automatically generate cuda code
-        s = tvm.create_schedule(Z.op)
+        Z = tvm.te.compute(output_shape, algorithm, name='Z')  # automatically generate cuda code
+        s = tvm.te.create_schedule(Z.op)
 
         print('Lowering: \n ===================== \n{}'.format(tvm.lower(s, [X, Y, D], simple_mode=True)))
 
@@ -93,13 +93,13 @@ class DiagonaledMM(torch.autograd.Function):
         j_outer, j_inner = s[Z].split(s[Z].op.axis[-1], factor=b1)
         i_outer, i_inner = s[Z].split(s[Z].op.axis[1], factor=b2)
 
-        s[Z].bind(j_outer, tvm.thread_axis("blockIdx.x"))
-        s[Z].bind(j_inner, tvm.thread_axis("threadIdx.y"))
+        s[Z].bind(j_outer, tvm.te.thread_axis("blockIdx.x"))
+        s[Z].bind(j_inner, tvm.te.thread_axis("threadIdx.y"))
 
-        s[Z].bind(i_outer, tvm.thread_axis("blockIdx.y"))
-        s[Z].bind(i_inner, tvm.thread_axis("threadIdx.z"))
+        s[Z].bind(i_outer, tvm.te.thread_axis("blockIdx.y"))
+        s[Z].bind(i_inner, tvm.te.thread_axis("threadIdx.z"))
 
-        tx = tvm.thread_axis("threadIdx.x")
+        tx = tvm.te.thread_axis("threadIdx.x")
         s[Z].bind(s[Z].op.reduce_axis[0], tx)
         s[ZF].compute_at(s[Z], s[Z].op.reduce_axis[0])
         s[Z].set_store_predicate(tx.var.equal(0))
@@ -107,7 +107,7 @@ class DiagonaledMM(torch.autograd.Function):
         print('Lowering with GPU splits: \n ===================== \n{}'.format(tvm.lower(s, [X, Y, D], simple_mode=True)))
 
         # compiling the automatically generated cuda code
-        diagonaled_mm = tvm.build(s, [X, Y, Z, D, w, w_upper, padding, transpose_t1, t3d3], target=device, target_host=tgt_host, name='diagonaled_mm')
+        diagonaled_mm = tvm.build(s, [X, Y, Z, D, w, w_upper, padding, transpose_t1, t3d3], target=tvm.target.Target(device, host=tgt_host), name='diagonaled_mm')
         return diagonaled_mm
 
     @staticmethod
@@ -123,7 +123,7 @@ class DiagonaledMM(torch.autograd.Function):
 
     @staticmethod
     def _load_compiled_function(dtype: str, device: str):
-        from tvm.module import load  # this can be the small runtime python library, and doesn't need to be the whole thing
+        from tvm.runtime.module import load_module  # this can be the small runtime python library, and doesn't need to be the whole thing
         filename = DiagonaledMM._get_lib_filename(dtype, device)
         current_dir = os.path.dirname(os.path.abspath(__file__))
         potential_dirs = ['../../', '../', './', f'{current_dir}/', f'{current_dir}/../']
@@ -131,7 +131,7 @@ class DiagonaledMM(torch.autograd.Function):
             filepath = '{}{}'.format(potential_dir, filename)
             if os.path.isfile(filepath):
                 print('Loading tvm binary from: {}'.format(filepath))
-                return load(filepath)
+                return load_module(filepath)
         return None
 
     @staticmethod
