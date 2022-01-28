@@ -6,7 +6,7 @@ import copy
 from transformers import BartTokenizer
 
 from transformers import BartForConditionalGeneration
-from transformers.modeling_bart import shift_tokens_right
+from transformers.models.bart.modeling_bart import shift_tokens_right
 from longformer.longformer_encoder_decoder import LongformerSelfAttentionForBart, LongformerEncoderDecoderConfig
 from longformer.longformer_encoder_decoder import LongformerEncoderDecoderForConditionalGeneration
 
